@@ -2125,7 +2125,7 @@ class _SettingsPageState extends State<SettingsPage> {
               showAboutDialog(
                 context: context,
                 applicationName: 'SCOM',
-                applicationVersion: '1.0.0',
+                applicationVersion: '0.1.0',
                 applicationLegalese: '©2025 SCOM Team',
                 children: const [
                   Text('A simple and efficient task management application.'),
