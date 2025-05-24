@@ -9,7 +9,7 @@ on:
   workflow_call:
 
 jobs:
-  build-on-linux:
+  build-for-linux:
 
     runs-on: ubuntu-latest
 
@@ -48,7 +48,7 @@ jobs:
         name: linux-release
         path: linux-release.tar.gz
 
-  build-on-windows:
+  build-for-windows:
 
     runs-on: windows-latest
 
@@ -81,7 +81,7 @@ jobs:
         name: windows-release
         path: windows-release.zip
 
-  build-on-macos:
+  build-for-macos:
 
     runs-on: macos-latest
 
@@ -146,6 +146,20 @@ jobs:
         tar -xf ./cmake-3.31.7-linux-x86_64.tar.gz -C .
     - name: flutter-install
       run: curl -O https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.0-stable.tar.xz && tar -xf ./flutter_linux_3.27.0-stable.tar.xz -C .
+
+    - name: Decode Keystore
+      run: |
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > flutter_scom/android/app/my-release-key.jks
+
+    - name: Create key.properties
+      run: |
+        cat <<EOF > flutter_scom/android/key.properties
+        storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+        keyPassword=${{ secrets.KEY_PASSWORD }}
+        keyAlias=${{ secrets.KEY_ALIAS }}
+        storeFile=my-release-key.jks
+        EOF
+
     - name: build
       run: export PATH=/home/runner/work/Simple-Calendar-and-Outcome-Manager/Simple-Calendar-and-Outcome-Manager/cmake-3.31.7-linux-x86_64/bin:$PATH && cd flutter_scom && ../flutter/bin/flutter config --no-analytics && ../flutter/bin/flutter config --no-cli-animations && ../flutter/bin/flutter pub get && ../flutter/bin/flutter build apk
     - name: bundle
