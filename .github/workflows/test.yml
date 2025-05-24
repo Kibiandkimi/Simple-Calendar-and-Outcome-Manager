@@ -4,16 +4,20 @@ on:
   push:
     branches:
     - database-develop
+    - Add-Github-Action
   workflow_dispatch:
   workflow_call:
 
 jobs:
-  build-on-linux:
+  Test:
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: test
-      run: cd database && && mkdir cmake-build-debug && cmake -S . -B ./cmake-build-test -DTEST=true && cmake --build ./cmake-build-test --target SCOM_database_test -j 4
+    - name: Build Test
+      run: cd database/src && mkdir cmake-build-test && cmake -S . -B ./cmake-build-test -DTEST=true && cmake --build ./cmake-build-test --target SCOM_database_TEST -j 4
+
+    - name: Test
+      run: cd database/src/cmake-build-test && ./SCOM_database_TEST

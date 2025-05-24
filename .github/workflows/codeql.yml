@@ -20,7 +20,7 @@ on:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analyze
     # Runner size impacts CodeQL analysis time. To learn more, please see:
     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
     #   - https://gh.io/supported-runners-and-hardware-resources
@@ -40,10 +40,6 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-        - language: c-cpp
-          build-mode: autobuild
         # CodeQL supports the following values keywords for 'language': 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
@@ -66,8 +62,9 @@ jobs:
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
-        languages: ${{ matrix.language }}
-        build-mode: ${{ matrix.build-mode }}
+        languages: c-cpp
+        build-mode: autobuild
+        source-root: ./database/src
         # If you wish to specify custom queries, you can do so here or in a config file.
         # By default, queries listed here will override any specified in a config file.
         # Prefix the list here with "+" to use these queries and those in the config file.
@@ -81,17 +78,13 @@ jobs:
     # to build your code.
     # ℹ️ Command-line programs to run using the OS shell.
     # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
-    - if: matrix.build-mode == 'manual'
-      shell: bash
-      run: |
-        echo 'If you are using a "manual" build mode for one or more of the' \
-          'languages you are analyzing, replace this with the commands to build' \                                                                                                                                                
-          'your code, for example:'
-        echo '  make bootstrap'
-        echo '  make release'
-        exit 1
+
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
+      with:
+        working-directory: ./database/src
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
-        category: "/language:${{matrix.language}}"
+        checkout_path: ./database/src

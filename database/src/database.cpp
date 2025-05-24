@@ -5,14 +5,14 @@
 #include <iomanip>
 #include <iostream>
 #include <string>
-#include <sstream> // for macos
+#include <sstream> // for macOS
 #include "sqlite3.h"
 
 #include "easylogging++.h"
 
 INITIALIZE_EASYLOGGINGPP
 
-using std::format, std::stoi;
+using std::stoi;
 using Task = Database::Task;
 using TaskList = Database::TaskList;
 
@@ -23,8 +23,8 @@ int Database::run_sql_cmd(const char* sql_cmd, int(* callback)(void*, int, char*
     int rc = sqlite3_exec(database, sql_cmd, callback, data, &errMsg);
 
     if (rc != SQLITE_OK) {
-        LOG(ERROR) << "SQL Command Failed!" << std::endl;
-        LOG(ERROR) << "Error Message: " << errMsg << std::endl;
+        LOG(ERROR) << "SQL Command Failed!";
+        LOG(ERROR) << "Error Message: " << errMsg;
         sqlite3_free(errMsg);
         return -1;
     }
@@ -59,24 +59,24 @@ Database::Database(const string& file_path) {
         return;
     }
     if (version != 3) {
-        LOG(ERROR) << "Unexpected database version!" << std::endl;
+        LOG(ERROR) << "Unexpected database version!";
         throw std::runtime_error("Error: unexpected database version!");
     }
 
     run_sql_cmd("SELECT VALUE FROM META WHERE NAME = 'LIST_ID';", [](void* data, int argc, char** argv, char** colName) -> int {
-        *static_cast<int*>(data) = std::stoi(argv[0]);
+        *static_cast<uint*>(data) = std::stoi(argv[0]);
         return 0;
     }, &task_list_id);
     run_sql_cmd("SELECT COUNT(*) FROM LISTS;", [](void* data, int argc, char** argv, char** colName) -> int {
-        *static_cast<int*>(data) = std::stoi(argv[0]);
+        *static_cast<uint*>(data) = std::stoi(argv[0]);
         return 0;
     }, &task_list_num);
     run_sql_cmd("SELECT VALUE FROM META WHERE NAME = 'TASK_ID';", [](void* data, int argc, char** argv, char** colName) -> int {
-        *static_cast<int*>(data) = std::stoi(argv[0]);
+        *static_cast<uint*>(data) = std::stoi(argv[0]);
         return 0;
     }, &task_id);
     run_sql_cmd("SELECT COUNT(*) FROM TASKS;", [](void* data, int argc, char** argv, char** colName) -> int {
-        *static_cast<int*>(data) = std::stoi(argv[0]);
+        *static_cast<uint*>(data) = std::stoi(argv[0]);
         return 0;
     }, &task_num);
 
@@ -85,6 +85,12 @@ Database::Database(const string& file_path) {
 Database::~Database() {
     sqlite3_close(database);
 }
+
+#ifdef MACOS
+    #include "database_macos.cpp"
+#else
+
+using std::format;
 
 int Database::new_task_list(TaskList*& task_list) {
     int code = run_sql_cmd(std::format("UPDATE META SET VALUE = '{}' WHERE NAME = 'LIST_ID';", task_list_id + 1).c_str(), nullptr, nullptr);
@@ -110,12 +116,19 @@ int Database::delete_task_list(uint id) {
     int code = run_sql_cmd(std::format("DELETE FROM LISTS WHERE ID = '{}';", id).c_str(), nullptr, nullptr);
     if (code == 0) {
         task_list_num--;
-        return 0;
+        int delete_task_num;
+        run_sql_cmd(format("SELECT COUNT(*) FROM TASKS WHERE BELONG = '{}';", id).c_str(), [](void* data, int argc, char** argv, char** colName) -> int {
+            *static_cast<int*>(data) = std::stoi(argv[0]);
+            return 0;
+        }, &delete_task_num);
+        task_num -= delete_task_num;
+        code = run_sql_cmd(format("DELETE FROM TASKS WHERE BELONG = '{}';", id).c_str(), nullptr, nullptr);
+        return code == 0 ? 0 : -1;
     }
     return code;
 }
 
-int Database::query_task_list_num(uint& num) {
+int Database::query_task_list_num(uint& num) const {
     num = task_list_num;
     return 0;
 }
@@ -161,7 +174,7 @@ int Database::add_task(Task* task) {
 }
 
 int Database::delete_task(uint id) {
-    int code = run_sql_cmd("DELETE FROM TASKS WHERE ID = '{}';", nullptr, nullptr);
+    int code = run_sql_cmd(format("DELETE FROM TASKS WHERE ID = '{}';", id).c_str(), nullptr, nullptr);
     if (code == 0) {
         task_num--;
         return 0;
@@ -169,7 +182,7 @@ int Database::delete_task(uint id) {
     return code;
 }
 
-int Database::query_task_num(uint& num) {
+int Database::query_task_num(uint& num) const {
     num = task_num;
     return 0;
 }
@@ -204,6 +217,14 @@ int Database::update_task(const Task& task) {
     return run_sql_cmd(format("UPDATE TASKS SET BELONG = {}, TITLE = '{}', DESCRIPTION = '{}', START_TIME = {}, END_TIME = {}, STATUS = {} WHERE ID = '{}';", task.belong, task.title, task.description, task.start_time, task.end_time, task.status, task.id).c_str(), nullptr, nullptr);
 }
 
+#endif
+
+#ifdef __ANDROID__
+    #include "database_android.cpp"
+#else
+    #define PLATFORM_ANDROID 0
+#endif
+
 string Utility::time_to_string(const time_t time) {
     const std::tm* tm = std::localtime(&time);
     std::stringstream ss;
@@ -214,7 +235,7 @@ string Utility::time_to_string(const time_t time) {
 long long Utility::string_to_time(const std::string& time) {
     std::tm tm = {};
     std::istringstream ss(time);
-    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
     return mktime(&tm);
 }
 
@@ -250,13 +271,24 @@ Database* db = nullptr;
 bool inited = false;
 int Dart_init() {
     if (inited) {
-        LOG(WARNING) << "Repeated init." << std::endl;
+        LOG(WARNING) << "Repeated init.";
         return -2;
     }
 
-    db = new Database("tasks.db");
+    std::string path;
+
+    #ifdef __ANDROID__
+        LOG(INFO) << "Android init.";
+        path = get_database_path();
+        LOG(DEBUG) << "Android path:" << path;
+        // throw std::runtime_error("Detect Andriod Successful!");
+    #else
+        path = "tasks.db";
+    #endif
+
+    db = new Database(path);
     inited = true;
-    LOG(DEBUG) << "Init finished." << std::endl;
+    LOG(DEBUG) << "Init finished.";
 
     return 0;
 }
@@ -281,107 +313,125 @@ int Dart_get_list_pre() {
         db->query_all_task_list(lists);
         list_cnt = 0;
         list_pre = true;
-        LOG(DEBUG) << "List preloaded." << std::endl;
+        LOG(DEBUG) << "List preloaded.";
         return static_cast<int>(list_num);
     }
-    LOG(ERROR) << "No inited or already preloaded." << std::endl;
+    LOG(ERROR) << "No inited or already preloaded.";
     return -1;
 }
 
 int Dart_get_task_pre() {
     if (inited && !task_pre) {
-        db->query_task_list_num(task_num);
+        db->query_task_num(task_num);
         db->query_all_task(tasks);
         task_cnt = 0;
         task_pre = true;
-        LOG(DEBUG) << "Task preloaded." << std::endl;
+        LOG(DEBUG) << "Task preloaded.";
         return static_cast<int>(task_num);
     }
-    LOG(ERROR) << "No inited or already preloaded." << std::endl;
+    LOG(ERROR) << "No inited or already preloaded.";
     return -1;
 }
 
 Dart_TaskList Dart_get_list() {
     if (list_pre && list_cnt < list_num) {
-        list_cnt++;
-        return list_to_dart_task_list(lists[list_cnt - 1]);
+        return list_to_dart_task_list(lists[list_cnt++]);
     }
-    LOG(ERROR) << "No preloaded or already finished." << std::endl;
+    LOG(ERROR) << "No preloaded or already finished.";
     return Dart_TaskList{};
 }
 
 Dart_Task Dart_get_task() {
     if (task_pre && task_cnt < task_num) {
-        task_cnt++;
-        return task_to_dart_task(tasks[task_cnt - 1]);
+        return task_to_dart_task(tasks[task_cnt++]);
     }
-    LOG(ERROR) << "No preloaded or already finished." << std::endl;
+    LOG(ERROR) << "No preloaded or already finished.";
     return Dart_Task{};
 }
 
 int Dart_create_tasklist(const char* list_name) {
-    TaskList *list;
-    db->new_task_list(list);
-    list->title = list_name;
-    int id = static_cast<int>(list->get_id());
-    db->add_task_list(list);
-    return id;
+    if (inited) {
+        TaskList *list;
+        db->new_task_list(list);
+        list->title = list_name;
+        int id = static_cast<int>(list->get_id());
+        db->add_task_list(list);
+        return id;
+    }
+    LOG(ERROR) << "No inited.";
+    return -1;
 }
 
 int Dart_create_task(int list_id, const char* title, const char* description, const char* startDate,
                               const char* endDate, int status) {
-    Task *task;
-    db->new_task(task);
-    task->belong = list_id,
-    task->title = title,
-    task->description = description,
-    task->start_time = string_to_time(startDate),
-    task->end_time = string_to_time(endDate),
-    task->status = status;
-    int id = static_cast<int>(task->get_id());
-    db->add_task(task);
-    return id;
+    if (inited) {
+        Task *task;
+        db->new_task(task);
+        task->belong = list_id,
+        task->title = title,
+        task->description = description,
+        task->start_time = string_to_time(startDate),
+        task->end_time = string_to_time(endDate),
+        task->status = status;
+        int id = static_cast<int>(task->get_id());
+        db->add_task(task);
+        return id;
+    }
+    LOG(ERROR) << "No inited.";
+    return -1;
 }
 
 int Dart_update_task(int list_id, int task_id, const char* title, const char* description,
                               const char* startDate, const char* endDate, int status) {
-    Task *task;
-    db->query_task(task_id, task);
-    task->belong = list_id,
-    task->title = title,
-    task->description = description,
-    task->start_time = string_to_time(startDate),
-    task->end_time = string_to_time(endDate),
-    task->status = status;
-    db->update_task(*task);
-    return 0;
+    if (inited) {
+        Task *task;
+        db->query_task(task_id, task);
+        task->belong = list_id,
+        task->title = title,
+        task->description = description,
+        task->start_time = string_to_time(startDate),
+        task->end_time = string_to_time(endDate),
+        task->status = status;
+        db->update_task(*task);
+        return 0;
+    }
+    LOG(ERROR) << "No inited.";
+    return -1;
 }
 
 int Dart_delete_task(int task_id) {
-    db->delete_task(task_id);
-    return 0;
+    if (inited) {
+        db->delete_task(task_id);
+        return 0;
+    }
+    LOG(ERROR) << "No inited.";
+    return -1;
 }
 
 int Dart_delete_tasklist(int list_id) {
-    db->delete_task_list(list_id);
-    return 0;
+    if(inited) {
+        db->delete_task_list(list_id);
+        return 0;
+    }
+    LOG(ERROR) << "No inited.";
+    return -1;
 }
 
 int Dart_query_tasklist_num() {
-    LOG(WARNING) << "Function has been deprecated." << std::endl;
+    LOG(WARNING) << "Function has been deprecated.";
     uint ret = -1;
     db->query_task_list_num(ret);
     return static_cast<int>(ret);
 }
 
 int Dart_query_tasklist_id(int num) {
-    LOG(ERROR) << "Function has been deleted." << std::endl;
+    LOG(ERROR) << "Function has been deleted.";
     // throw std::runtime_error("Function has been deleted.");
     return -1;
 }
 
 char* Dart_query_tasklist_name(int id) {
-    LOG(WARNING) << "Function has been deprecated." << std::endl;
+    LOG(WARNING) << "Function has been deprecated.";
     TaskList *list;
     db->query_task_list(id, list);
     char* ret = new char[list->title.length() + 1];
@@ -390,13 +440,13 @@ char* Dart_query_tasklist_name(int id) {
 }
 
 int Dart_query_task_num(int task_num) {
-    LOG(ERROR) << "Function has been deleted." << std::endl;
+    LOG(ERROR) << "Function has been deleted.";
     // throw std::runtime_error("Function has been deleted.");
     return -1;
 }
 
 int Dart_update_task_stat(int list_id, int task_id, int stat) {
-    LOG(WARNING) << "Function has been deprecated." << std::endl;
+    LOG(WARNING) << "Function has been deprecated.";
     Task *task;
     db->query_task(task_id, task);
     task->status = stat;
@@ -405,7 +455,7 @@ int Dart_update_task_stat(int list_id, int task_id, int stat) {
 }
 
 int Dart_move_task(int list_id, int task_id, int to_list_id) {
-    LOG(WARNING) << "Function has been deprecated." << std::endl;
+    LOG(WARNING) << "Function has been deprecated.";
     Task *task;
     db->query_task(task_id, task);
     task->belong = to_list_id;

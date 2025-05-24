@@ -75,13 +75,13 @@ public:
 
     int add_task_list(TaskList* list);
     int delete_task_list(uint id);
-    int query_task_list_num(uint&);
+    int query_task_list_num(uint&) const;
     int query_task_list(uint id, TaskList*&);
     int query_all_task_list(vector<TaskList>&);
     int update_task_list(const TaskList& task_list);
     int add_task(Task* task);
     int delete_task(uint id);
-    int query_task_num(uint&);
+    int query_task_num(uint&) const;
     int query_task(uint id, Task*&);
     int query_all_task(vector<Task>&);
     int update_task(const Task& task);
