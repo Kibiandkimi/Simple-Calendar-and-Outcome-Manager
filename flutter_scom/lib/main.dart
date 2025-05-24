@@ -1925,6 +1925,7 @@ class MonthlyView extends StatefulWidget {
 }
 
 class _MonthlyViewState extends State<MonthlyView> {
+  CalendarFormat _calendarFormat = CalendarFormat.month;
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
 
@@ -1946,12 +1947,20 @@ class _MonthlyViewState extends State<MonthlyView> {
                 lastDay: DateTime.utc(2030, 12, 31),
                 focusedDay: _focusedDay,
                 selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                calendarFormat: _calendarFormat,
                 eventLoader: _getTasksForDay,
                 onDaySelected: (selectedDay, focusedDay) {
                   setState(() {
                     _selectedDay = selectedDay;
                     _focusedDay = focusedDay;
                   });
+                },
+                onFormatChanged: (format) {
+                  if (_calendarFormat != format) {
+                    setState(() {
+                      _calendarFormat = format;
+                    });
+                  }
                 },
                 onPageChanged: (focusedDay) {
                   setState(() => _focusedDay = focusedDay);
