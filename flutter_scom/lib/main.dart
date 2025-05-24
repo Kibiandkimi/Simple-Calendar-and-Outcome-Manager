@@ -5,37 +5,184 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:ffi/ffi.dart';
-import 'package:flutter_popup/flutter_popup.dart';
 import 'package:database/database.dart' as database;
 import 'package:table_calendar/table_calendar.dart';
 
-class Task {
-  var listId = 0;
-  var id = 0;
-  var title = 'Task 1';
-  var description = 'Task description.';
-  var startTime = DateTime.now();
-  var endTime = DateTime.now();
-  var status = 0;
+// ========================== Models ==========================
 
-  Task(this.listId, this.id, this.title, this.description, this.startTime, this.endTime, this.status);
+class Task {
+  int listId;
+  int id;
+  String title;
+  String description;
+  DateTime startTime;
+  DateTime endTime;
+  int status;
+
+  Task({
+    required this.listId,
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.startTime,
+    required this.endTime,
+    this.status = 0,
+  });
+
+  factory Task.fromDartTask(Dart_Task task) {
+    return Task(
+      listId: task.list_id,
+      id: task.id,
+      title: task.title.toDartString(),
+      description: task.description.toDartString(),
+      startTime: DateTime.parse(task.startDate.toDartString()),
+      endTime: DateTime.parse(task.endDate.toDartString()),
+      status: task.status,
+    );
+  }
+
+  bool get isCompleted => status == 1;
+  bool get isOverdue => status == 2;
+  bool get isDeleted => status == 4;
 }
 
 class TaskList {
-  var id = 0;
-  var title = 'Todo List';
-  Map<int, Task> tasks = <int, Task>{};
+  int id;
+  String title;
+  Map<int, Task> tasks;
 
-  TaskList(this.id, this.title, this.tasks);
+  TaskList({
+    required this.id,
+    required this.title,
+    Map<int, Task>? tasks,
+  }) : tasks = tasks ?? {};
+
+  factory TaskList.fromDartTaskList(Dart_TaskList list) {
+    return TaskList(
+      id: list.id,
+      title: list.title.toDartString(),
+    );
+  }
+
+  List<Task> get activeTasks =>
+      tasks.values.where((task) => !task.isDeleted).toList();
 }
 
+// ========================== Services ==========================
+
+class DatabaseService {
+  static bool _initialized = false;
+  static final Map<int, TaskList> _taskLists = {};
+
+  static Map<int, TaskList> get taskLists => _taskLists;
+
+  static void initialize() {
+    if (_initialized) {
+      developer.log('Database already initialized', level: 900);
+      return;
+    }
+
+    database.initDatabaseC();
+    _loadTaskLists();
+    _loadTasks();
+    _initialized = true;
+    developer.log('Database initialized successfully', level: 800);
+  }
+
+  static void _loadTaskLists() {
+    final listNum = database.preGetTaskListC();
+    for (int i = 0; i < listNum; i++) {
+      final listC = database.getTaskListC();
+      final taskList = TaskList.fromDartTaskList(listC);
+      _taskLists[taskList.id] = taskList;
+    }
+  }
+
+  static void _loadTasks() {
+    final taskNum = database.preGetTaskC();
+    for (int i = 0; i < taskNum; i++) {
+      final taskC = database.getTaskC();
+      final task = Task.fromDartTask(taskC);
+
+      if (_taskLists[task.listId] != null) {
+        _taskLists[task.listId]!.tasks[task.id] = task;
+      } else {
+        developer.log('No list found for task ${task.id}', level: 1000);
+      }
+    }
+  }
+
+  static int addTaskList(String title) {
+    final id = database.addTaskListC(title.toNativeUtf8());
+    _taskLists[id] = TaskList(id: id, title: title);
+    return id;
+  }
+
+  static int addTask(Task task) {
+    final id = database.addTaskC(
+      task.listId,
+      task.title.toNativeUtf8(),
+      task.description.toNativeUtf8(),
+      task.startTime.toString().toNativeUtf8(),
+      task.endTime.toString().toNativeUtf8(),
+      task.status,
+    );
+
+    task.id = id;
+    _taskLists[task.listId]?.tasks[id] = task;
+    return id;
+  }
+
+  static void updateTask(Task task) {
+    database.updateTaskC(
+      task.listId,
+      task.id,
+      task.title.toNativeUtf8(),
+      task.description.toNativeUtf8(),
+      task.startTime.toString().toNativeUtf8(),
+      task.endTime.toString().toNativeUtf8(),
+      task.status,
+    );
+    _taskLists[task.listId]?.tasks[task.id] = task;
+  }
+
+  static void deleteTask(int taskId, int listId) {
+    database.deleteTaskC(taskId);
+    _taskLists[listId]?.tasks.remove(taskId);
+  }
+
+  static void deleteTaskList(int listId) {
+    database.deleteTaskListC(listId);
+    _taskLists.remove(listId);
+  }
+
+  static void moveTask(int taskId, int fromListId, int toListId) {
+    final task = _taskLists[fromListId]?.tasks[taskId];
+    if (task != null && _taskLists[toListId] != null) {
+      task.listId = toListId;
+      updateTask(task);
+      _taskLists[fromListId]?.tasks.remove(taskId);
+      _taskLists[toListId]?.tasks[taskId] = task;
+    }
+  }
+}
+
+// ========================== State Management ==========================
+
+class AppState extends ChangeNotifier {
+  void refresh() => notifyListeners();
+}
+
+// ========================== Main App ==========================
+
 void main() {
-  init();
-  runApp(MyApp());
+  DatabaseService.initialize();
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
@@ -46,1850 +193,1947 @@ class MyApp extends StatelessWidget {
           useMaterial3: true,
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepOrange),
         ),
-        home: MyHomePage(),
+        home: const MyHomePage(),
       ),
     );
   }
 }
 
-var initialized = false;
-var taskList = <int, TaskList>{};
-
-void init() {
-  if (!initialized) {
-    database.initDatabaseC();
-
-    var listNum = database.preGetTaskListC();
-    for (var i = 0; i < listNum; i++) {
-      var listC = database.getTaskListC();
-      var list = listCToList(listC);
-      taskList[list.id] = list;
-    }
-
-    var taskNum = database.preGetTaskC();
-    developer.log('taskNum: $taskNum', level: 800);
-    for (var i = 0; i < taskNum; i++) {
-      developer.log('Task $i', level: 800);
-      var taskC = database.getTaskC();
-      developer.log('TaskC ${taskC.startDate.toDartString()}, ${taskC.endDate.toDartString()}', level: 800);
-      var task = taskCToTask(taskC);
-      developer.log('Task ${task.startTime.toLocal()}, ${task.endTime.toLocal()}', level: 800);
-      if (taskList[task.listId] == null) {
-        developer.log('No List found for a task!', level: 1000, error: task.listId);
-      } else {
-        taskList[task.listId]!.tasks[task.id] = task;
-      }
-    }
-
-    developer.log('init finished.', level: 800);
-    initialized = true;
-  } else {
-    developer.log('Repeated init.', level: 900);
-  }
-}
-
-void addList(TaskList list) {
-  developer.log('addList', level: 800, error: list);
-  list.id = database.addTaskListC(list.title.toNativeUtf8());
-  taskList[list.id] = list;
-}
-
-void addTask(Task task) {
-  developer.log('addTask', level: 800, error: task);
-  task.id = database.addTaskC(task.listId, task.title.toNativeUtf8(), task.description.toNativeUtf8(), task.startTime.toString().toNativeUtf8(), task.endTime.toString().toNativeUtf8(), task.status);
-  developer.log('Task ${task.startTime.toString()}, ${task.endTime.toString()}', level: 800);
-  if (taskList[task.listId] == null) {
-    developer.log('No list found for a task!', level: 1000, error: task.listId);
-  } else {
-    taskList[task.listId]!.tasks[task.id] = task;
-  }
-}
-
-void deleteTask(int id, int listId) {
-  database.deleteTaskC(id);
-  if (taskList[listId] == null) {
-    developer.log('No list found for a task!', level: 1000, error: listId);
-  } else {
-    taskList[listId]!.tasks.remove(id);
-  }
-}
-
-void modifyTask(int id, int listId) {
-  if (taskList[listId] == null) {
-    developer.log('No list found for a task!', level: 1000, error: listId);
-  } else {
-    if (taskList[listId]!.tasks[id] == null) {
-      developer.log('No task found!', level: 1000, error: id);
-    }
-    var task = taskList[listId]!.tasks[id];
-    database.updateTaskC(listId, id, task!.title.toNativeUtf8(), task.description.toNativeUtf8(), task.startTime.toString().toNativeUtf8(), task.endTime.toString().toNativeUtf8(), task.status);
-  }
-}
-
-void moveTask(int id, int listId, int newListId) {
-  if (taskList[listId] == null || taskList[newListId] == null) {
-    developer.log('No list found for a task!', level: 1000, error: listId);
-  } else {
-    if (taskList[listId]!.tasks[id] == null) {
-      developer.log('No task found!', level: 1000, error: id);
-    }
-    var task = taskList[listId]!.tasks[id];
-    database.updateTaskC(
-      newListId,
-      id,
-      task!.title.toNativeUtf8(),
-      task.description.toNativeUtf8(),
-      task.startTime.toString().toNativeUtf8(),
-      task.endTime.toString().toNativeUtf8(),
-      task.status
-    );
-    taskList[listId]!.tasks.remove(id);
-    task.listId = newListId;
-    taskList[newListId]!.tasks[id] = task;
-  }
-}
-
-void deleteList(int id) {
-  database.deleteTaskListC(id);
-  taskList.remove(id);
-}
-
-TaskList listCToList(Dart_TaskList list) {
-  var dartList = TaskList(list.id, list.title.toDartString().toString(), {});
-  return dartList;
-}
-
-Task taskCToTask(Dart_Task task) {
-  var dartTask = Task(task.list_id, task.id, task.title.toDartString().toString(), task.description.toDartString().toString(), DateTime.parse(task.startDate.toDartString().toString()), DateTime.parse(task.endDate.toDartString().toString()), task.status);
-  return dartTask;
-}
-
-class AppState extends ChangeNotifier {
-  void notify() {
-    notifyListeners();
-  }
-}
+// ========================== Home Page ==========================
 
 class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key});
+
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  var selectedIndex = 0;
+  int _selectedIndex = 0;
+
+  static const List<({IconData icon, String label})> _destinations = [
+    (icon: Icons.checklist, label: 'SCOM'),
+    (icon: Icons.calendar_month, label: 'Calendar'),
+    (icon: Icons.settings, label: 'Settings'),
+  ];
+
+  Widget _getPage(int index) {
+    switch (index) {
+      case 0: return const TodoPage();
+      case 1: return const CalendarPage();
+      case 2: return const SettingsPage();
+      default: throw UnimplementedError('No widget for $_selectedIndex');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    Widget page;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWideScreen = constraints.maxWidth >= 800;
+        final isMobile = constraints.maxWidth < 600;
 
-    switch (selectedIndex) {
-      case 0:
-        page = TodoPage();
-        break;
-      case 1:
-        page = CalendarPage();
-        break;
-      case 2:
-        page = SettingPage();
-        break;
-      default :
-        throw UnimplementedError('no widget for $selectedIndex');
-    }
+        if (isMobile) {
+          return Scaffold(
+            body: _getPage(_selectedIndex),
+            bottomNavigationBar: BottomNavigationBar(
+              currentIndex: _selectedIndex,
+              onTap: (index) => setState(() => _selectedIndex = index),
+              items: _destinations.map((dest) =>
+                BottomNavigationBarItem(
+                  icon: Icon(dest.icon),
+                  label: dest.label,
+                )
+              ).toList(),
+            ),
+          );
+        }
 
-    IconData calendarIcon = Icons.calendar_month;
-
-    return LayoutBuilder(builder: (context, constraints) {
-      return Scaffold(
-        body: Row (
-          children: [
-            SafeArea(
-              child:
-                NavigationRail(
-                  extended: constraints.maxWidth >= 800,
-                  destinations: [
+        return Scaffold(
+          body: Row(
+            children: [
+              SafeArea(
+                child: NavigationRail(
+                  extended: isWideScreen,
+                  destinations: _destinations.map((dest) =>
                     NavigationRailDestination(
-                      icon: Icon(Icons.checklist),
-                      label: Text('SCOM'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(calendarIcon),
-                      label: Text('Calendar'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.settings),
-                      label: Text('Settings'),
-                    ),
-                  ],
-                  selectedIndex: selectedIndex,
-                  onDestinationSelected: (value){
-                    setState(() {
-                      selectedIndex = value;
-                    });
-                  },
+                      icon: Icon(dest.icon),
+                      label: Text(dest.label),
+                    )
+                  ).toList(),
+                  selectedIndex: _selectedIndex,
+                  onDestinationSelected: (index) =>
+                      setState(() => _selectedIndex = index),
                 ),
-            ),
-            Expanded(
-              child: Container(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                child : page,
               ),
-            ),
-          ],
-        ),
-      );
-    });
+              Expanded(
+                child: Container(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  child: _getPage(_selectedIndex),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 
+// ========================== Todo Page ==========================
+
 class TodoPage extends StatefulWidget {
+  const TodoPage({super.key});
+
   @override
   State<TodoPage> createState() => _TodoPageState();
 }
 
-Task changeTaskCtoTask(Dart_Task task) {
-  return Task(task.list_id, task.id, task.title.toDartString(), task.description.toDartString(), DateTime.parse(task.startDate.toDartString()), DateTime.parse(task.endDate.toDartString()), task.status);
-}
-
-class MyNavigationRail extends StatefulWidget {
-  const MyNavigationRail({
-    super.key,
-    this.destinations = const [],
-    required this.onDestinationSelected,
-    required this.selectedIndex,
-  });
-  final List<(int, Widget)> destinations;
-  final ValueChanged<(int, int)> onDestinationSelected;
-  final int selectedIndex;
-
-  @override
-  State<MyNavigationRail> createState() => _MyNavigationRailState();
-}
-
-class MyDestination {
-  MyDestination({
-    required this.widget,
-    required this.index,
-    required this.id,
-  });
-  Widget widget;
-  int index;
-  int id;
-}
-
-class _MyNavigationRailState extends State<MyNavigationRail> {
-
-  var selectedIndex = 0;
+class _TodoPageState extends State<TodoPage> {
+  int? _selectedListId;
 
   @override
   Widget build(BuildContext context) {
-    selectedIndex = widget.selectedIndex;
-    List<MyDestination> list = [];
-    for (var i = 0; i < widget.destinations.length; i++) {
-      list.add(MyDestination(widget: widget.destinations[i].$2, index: i, id: widget.destinations[i].$1));
-    }
-    var destinations = list.map((destination) {
-      if (destination.index == selectedIndex) {
-        return Container(
-            margin: EdgeInsets.all(10.0),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10.0),
-              color: Theme.of(context).colorScheme.primaryContainer,
-            ),
-            child: InkWell(
-              onTap: (){
-                setState(() {
-                  selectedIndex = destination.index;
-                  widget.onDestinationSelected((destination.index, destination.id));
-                });
-              },
-              child: destination.widget,
-            ),
-        );
-      }
-      return Container(
-        margin: EdgeInsets.all(10.0),
-        child: InkWell(
-          onTap: (){
-            setState(() {
-              selectedIndex = destination.index;
-              widget.onDestinationSelected((destination.index, destination.id));
-            });
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final taskLists = DatabaseService.taskLists;
+
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final isMobile = constraints.maxWidth < 600;
+
+            if (isMobile) {
+              return _buildMobileLayout(taskLists);
+            }
+            return _buildDesktopLayout(taskLists);
           },
-          child: destination.widget,
+        );
+      },
+    );
+  }
+
+  Widget _buildMobileLayout(Map<int, TaskList> taskLists) {
+    if (_selectedListId == null || !taskLists.containsKey(_selectedListId)) {
+      return _buildTaskListSelector(taskLists, true);
+    }
+
+    return _buildTaskListView(_selectedListId!, true);
+  }
+
+  Widget _buildDesktopLayout(Map<int, TaskList> taskLists) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 250,
+          child: _buildTaskListSelector(taskLists, false),
         ),
-      );
-    }).toList();
-    return Container(
-      color: Color.lerp(Colors.white, Theme.of(context).colorScheme.primaryContainer, 0.5),
-      child: ListView(
-        children: destinations,
+        Expanded(
+          child: _selectedListId != null && taskLists.containsKey(_selectedListId)
+              ? _buildTaskListView(_selectedListId!, false)
+              : const Center(child: Text('Select a task list')),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTaskListSelector(Map<int, TaskList> taskLists, bool isMobile) {
+    return Scaffold(
+      appBar: isMobile ? AppBar(
+        title: const Text('Task Lists'),
+        leading: _selectedListId != null
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => setState(() => _selectedListId = null),
+              )
+            : null,
+      ) : null,
+      floatingActionButton: FloatingActionButton(
+        mini: !isMobile,
+        onPressed: _showAddTaskListDialog,
+        child: const Icon(Icons.add),
+      ),
+      body: ListView.builder(
+        itemCount: taskLists.length,
+        itemBuilder: (context, index) {
+          final taskList = taskLists.values.elementAt(index);
+          return _buildTaskListTile(taskList, isMobile);
+        },
       ),
     );
   }
 
-  void changeSelectedIndex(int index) {
-    setState(() {
-      selectedIndex = index;
-    });
+  Widget _buildTaskListTile(TaskList taskList, bool isMobile) {
+    final taskCount = taskList.activeTasks.length;
+
+    return ListTile(
+      leading: const Icon(Icons.list),
+      title: Text(taskList.title),
+      subtitle: Text('$taskCount tasks'),
+      trailing: PopupMenuButton<String>(
+        onSelected: (String value) {
+          if (value == 'delete') {
+            _deleteTaskList(taskList.id);
+          }
+        },
+        itemBuilder: (context) => [
+          PopupMenuItem<String>(
+            value: 'delete',
+            child: const Row(
+              children: [Icon(Icons.delete), SizedBox(width: 8), Text('Delete')],
+            ),
+          ),
+        ],
+      ),
+      onTap: () => setState(() => _selectedListId = taskList.id),
+      selected: _selectedListId == taskList.id,
+    );
+  }
+
+  Widget _buildTaskListView(int listId, bool isMobile) {
+    final taskList = DatabaseService.taskLists[listId]!;
+    final tasks = taskList.activeTasks;
+
+    return Scaffold(
+      appBar: isMobile ? AppBar(
+        title: Text(taskList.title),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => setState(() => _selectedListId = null),
+        ),
+      ) : AppBar(
+        title: Text(taskList.title),
+        automaticallyImplyLeading: false,
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showAddTaskDialog(listId),
+        child: const Icon(Icons.add),
+      ),
+      body: tasks.isEmpty
+          ? const Center(child: Text('No tasks yet'))
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: tasks.length,
+              itemBuilder: (context, index) => _buildTaskTile(tasks[index]),
+            ),
+    );
+  }
+
+  Widget _buildTaskTile(Task task) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: task.isOverdue ? Colors.deepOrange[300] : null,
+      child: ListTile(
+        leading: Checkbox(
+          value: task.isCompleted,
+          onChanged: (value) => _toggleTaskStatus(task),
+        ),
+        title: Text(
+          task.title,
+          style: TextStyle(
+            decoration: task.isCompleted ? TextDecoration.lineThrough : null,
+          ),
+        ),
+        subtitle: task.description.isNotEmpty ? Text(task.description) : null,
+        trailing: PopupMenuButton<String>(
+          onSelected: (String value) {
+            switch (value) {
+              case 'edit':
+                _showEditTaskDialog(task);
+                break;
+              case 'move':
+                _showMoveTaskDialog(task);
+                break;
+              case 'delete':
+                _deleteTask(task);
+                break;
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem<String>(
+              value: 'edit',
+              child: Row(
+                children: [Icon(Icons.edit), SizedBox(width: 8), Text('Edit')],
+              ),
+            ),
+            const PopupMenuItem<String>(
+              value: 'move',
+              child: Row(
+                children: [Icon(Icons.move_to_inbox), SizedBox(width: 8), Text('Move')],
+              ),
+            ),
+            const PopupMenuItem<String>(
+              value: 'delete',
+              child: Row(
+                children: [Icon(Icons.delete), SizedBox(width: 8), Text('Delete')],
+              ),
+            ),
+          ],
+        ),
+        onTap: () => _showEditTaskDialog(task),
+      ),
+    );
+  }
+
+  void _toggleTaskStatus(Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTaskList(int listId) {
+    DatabaseService.deleteTaskList(listId);
+    if (_selectedListId == listId) {
+      _selectedListId = null;
+    }
+    context.read<AppState>().refresh();
+  }
+
+  void _showAddTaskListDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AddTaskListDialog(
+        onAdd: (title) {
+          DatabaseService.addTaskList(title);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _showAddTaskDialog(int listId) {
+    showDialog(
+      context: context,
+      builder: (context) => AddTaskDialog(
+        listId: listId,
+        onAdd: (task) {
+          DatabaseService.addTask(task);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _showMoveTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => MoveTaskDialog(
+        task: task,
+        availableLists: DatabaseService.taskLists.values
+            .where((list) => list.id != task.listId)
+            .toList(),
+        onMove: (targetListId) {
+          DatabaseService.moveTask(task.id, task.listId, targetListId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
   }
 }
 
-class AddTaskListPage<T> extends PopupRoute<T> {
-  @override
-  Color? get barrierColor => Colors.black.withAlpha(0x50);
+// ========================== Dialogs ==========================
 
-  // This allows the popup to be dismissed by tapping the scrim or by pressing
-  // the escape key on the keyboard.
-  @override
-  bool get barrierDismissible => true;
+class AddTaskListDialog extends StatefulWidget {
+  final Function(String) onAdd;
+
+  const AddTaskListDialog({super.key, required this.onAdd});
 
   @override
-  String? get barrierLabel => 'Add Task List';
+  State<AddTaskListDialog> createState() => _AddTaskListDialogState();
+}
+
+class _AddTaskListDialogState extends State<AddTaskListDialog> {
+  final _controller = TextEditingController();
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 300);
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Task List'),
+      content: TextField(
+        controller: _controller,
+        decoration: const InputDecoration(
+          labelText: 'List Title',
+          border: OutlineInputBorder(),
+        ),
+        autofocus: true,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            if (_controller.text.trim().isNotEmpty) {
+              widget.onAdd(_controller.text.trim());
+              Navigator.pop(context);
+            }
+          },
+          child: const Text('Add'),
+        ),
+      ],
+    );
+  }
 
   @override
-  Widget buildPage(BuildContext context, Animation<double> animation,
-      Animation<double> secondaryAnimation) {
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+}
 
-    var titleController = TextEditingController();
-    var appState = context.watch<AppState>();
+class AddTaskDialog extends StatefulWidget {
+  final int listId;
+  final Function(Task) onAdd;
 
-    return Center(
-      child: DefaultTextStyle(
-        style: Theme.of(context).textTheme.bodyMedium!,
-        child: Container(
-          margin: EdgeInsets.all(40),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            color: Colors.white,
+  const AddTaskDialog({super.key, required this.listId, required this.onAdd});
+
+  @override
+  State<AddTaskDialog> createState() => _AddTaskDialogState();
+}
+
+class _AddTaskDialogState extends State<AddTaskDialog> {
+  final _titleController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  DateTime _startDate = DateTime.now();
+  TimeOfDay _startTime = TimeOfDay.now();
+  DateTime _endDate = DateTime.now();
+  TimeOfDay _endTime = TimeOfDay.now();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Task'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: 'Task Title',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _descriptionController,
+              decoration: const InputDecoration(
+                labelText: 'Description (optional)',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 16),
+            _buildDateTimeSelector(
+              'Start',
+              _startDate,
+              _startTime,
+              (date) => setState(() => _startDate = date),
+              (time) => setState(() => _startTime = time),
+            ),
+            const SizedBox(height: 16),
+            _buildDateTimeSelector(
+              'End',
+              _endDate,
+              _endTime,
+              (date) => setState(() => _endDate = date),
+              (time) => setState(() => _endTime = time),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _addTask,
+          child: const Text('Add'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDateTimeSelector(
+    String label,
+    DateTime date,
+    TimeOfDay time,
+    Function(DateTime) onDateChanged,
+    Function(TimeOfDay) onTimeChanged,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label Time', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: date,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime(2100),
+                  );
+                  if (picked != null) onDateChanged(picked);
+                },
+                icon: const Icon(Icons.calendar_today),
+                label: Text(DateFormat('MMM d, yyyy').format(date)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final picked = await showTimePicker(
+                    context: context,
+                    initialTime: time,
+                  );
+                  if (picked != null) onTimeChanged(picked);
+                },
+                icon: const Icon(Icons.access_time),
+                label: Text(time.format(context)),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _addTask() {
+    if (_titleController.text.trim().isEmpty) return;
+
+    final startDateTime = DateTime(
+      _startDate.year,
+      _startDate.month,
+      _startDate.day,
+      _startTime.hour,
+      _startTime.minute,
+    );
+
+    final endDateTime = DateTime(
+      _endDate.year,
+      _endDate.month,
+      _endDate.day,
+      _endTime.hour,
+      _endTime.minute,
+    );
+
+    final task = Task(
+      listId: widget.listId,
+      id: 0,
+      title: _titleController.text.trim(),
+      description: _descriptionController.text.trim(),
+      startTime: startDateTime,
+      endTime: endDateTime,
+    );
+
+    widget.onAdd(task);
+    Navigator.pop(context);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+}
+
+class EditTaskDialog extends StatefulWidget {
+  final Task task;
+  final Function(Task) onSave;
+  final VoidCallback onDelete;
+
+  const EditTaskDialog({
+    super.key,
+    required this.task,
+    required this.onSave,
+    required this.onDelete,
+  });
+
+  @override
+  State<EditTaskDialog> createState() => _EditTaskDialogState();
+}
+
+class _EditTaskDialogState extends State<EditTaskDialog> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _descriptionController;
+  late DateTime _startDate;
+  late TimeOfDay _startTime;
+  late DateTime _endDate;
+  late TimeOfDay _endTime;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.task.title);
+    _descriptionController = TextEditingController(text: widget.task.description);
+    _startDate = widget.task.startTime;
+    _startTime = TimeOfDay.fromDateTime(widget.task.startTime);
+    _endDate = widget.task.endTime;
+    _endTime = TimeOfDay.fromDateTime(widget.task.endTime);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Edit Task'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: 'Task Title',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _descriptionController,
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 16),
+            _buildDateTimeSelector(
+              'Start',
+              _startDate,
+              _startTime,
+              (date) => setState(() => _startDate = date),
+              (time) => setState(() => _startTime = time),
+            ),
+            const SizedBox(height: 16),
+            _buildDateTimeSelector(
+              'End',
+              _endDate,
+              _endTime,
+              (date) => setState(() => _endDate = date),
+              (time) => setState(() => _endTime = time),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            widget.onDelete();
+            Navigator.pop(context);
+          },
+          child: const Text('Delete', style: TextStyle(color: Colors.red)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _saveTask,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDateTimeSelector(
+    String label,
+    DateTime date,
+    TimeOfDay time,
+    Function(DateTime) onDateChanged,
+    Function(TimeOfDay) onTimeChanged,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label Time', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: date,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime(2100),
+                  );
+                  if (picked != null) onDateChanged(picked);
+                },
+                icon: const Icon(Icons.calendar_today),
+                label: Text(DateFormat('MMM d, yyyy').format(date)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final picked = await showTimePicker(
+                    context: context,
+                    initialTime: time,
+                  );
+                  if (picked != null) onTimeChanged(picked);
+                },
+                icon: const Icon(Icons.access_time),
+                label: Text(time.format(context)),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _saveTask() {
+    if (_titleController.text.trim().isEmpty) return;
+
+    final startDateTime = DateTime(
+      _startDate.year,
+      _startDate.month,
+      _startDate.day,
+      _startTime.hour,
+      _startTime.minute,
+    );
+
+    final endDateTime = DateTime(
+      _endDate.year,
+      _endDate.month,
+      _endDate.day,
+      _endTime.hour,
+      _endTime.minute,
+    );
+
+    final updatedTask = Task(
+      listId: widget.task.listId,
+      id: widget.task.id,
+      title: _titleController.text.trim(),
+      description: _descriptionController.text.trim(),
+      startTime: startDateTime,
+      endTime: endDateTime,
+      status: widget.task.status,
+    );
+
+    widget.onSave(updatedTask);
+    Navigator.pop(context);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+}
+
+class MoveTaskDialog extends StatelessWidget {
+  final Task task;
+  final List<TaskList> availableLists;
+  final Function(int) onMove;
+
+  const MoveTaskDialog({
+    super.key,
+    required this.task,
+    required this.availableLists,
+    required this.onMove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Move "${task.title}"'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: availableLists.map((list) =>
+          ListTile(
+            title: Text(list.title),
+            onTap: () {
+              onMove(list.id);
+              Navigator.pop(context);
+            },
           ),
-          child: Column(
+        ).toList(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
+
+class TaskDetailsDialog extends StatelessWidget {
+  final Task task;
+  final VoidCallback onEdit;
+  final VoidCallback onToggleComplete;
+  final VoidCallback onDelete;
+
+  const TaskDetailsDialog({
+    super.key,
+    required this.task,
+    required this.onEdit,
+    required this.onToggleComplete,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        task.title,
+        style: TextStyle(
+          decoration: task.isCompleted ? TextDecoration.lineThrough : null,
+        ),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (task.description.isNotEmpty) ...[
+            const Text(
+              'Description:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(task.description),
+            const SizedBox(height: 16),
+          ],
+          const Text(
+            'Time:',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${DateFormat('MMM d, yyyy').format(task.startTime)}',
+            style: const TextStyle(fontSize: 14),
+          ),
+          Text(
+            '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          Row(
             children: [
-              SizedBox(height: 10.0),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text('Add Task List',
-                      style: Theme.of(context).textTheme.headlineLarge),
+              Icon(
+                task.isCompleted
+                    ? Icons.check_circle
+                    : task.isOverdue
+                        ? Icons.warning
+                        : Icons.radio_button_unchecked,
+                color: task.isCompleted
+                    ? Colors.green
+                    : task.isOverdue
+                        ? Colors.red
+                        : Colors.grey,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                task.isCompleted
+                    ? 'Completed'
+                    : task.isOverdue
+                        ? 'Overdue'
+                        : 'Pending',
+                style: TextStyle(
+                  color: task.isCompleted
+                      ? Colors.green
+                      : task.isOverdue
+                          ? Colors.red
+                          : Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: onToggleComplete,
+          icon: Icon(task.isCompleted ? Icons.undo : Icons.check),
+          label: Text(task.isCompleted ? 'Mark Incomplete' : 'Mark Complete'),
+        ),
+        TextButton.icon(
+          onPressed: onEdit,
+          icon: const Icon(Icons.edit),
+          label: const Text('Edit'),
+        ),
+        TextButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            _showDeleteConfirmation(context);
+          },
+          icon: const Icon(Icons.delete, color: Colors.red),
+          label: const Text('Delete', style: TextStyle(color: Colors.red)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Task'),
+        content: Text('Are you sure you want to delete "${task.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              onDelete();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ========================== Calendar Page ==========================
+
+class CalendarPage extends StatefulWidget {
+  const CalendarPage({super.key});
+
+  @override
+  State<CalendarPage> createState() => _CalendarPageState();
+}
+
+class _CalendarPageState extends State<CalendarPage> {
+  int _selectedIndex = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 600;
+
+        Widget page;
+        switch (_selectedIndex) {
+          case 0:
+            page = HourlyView(tasks: _getAllTasks());
+            break;
+          case 1:
+            page = WeeklyView(tasks: _getAllTasks());
+            break;
+          case 2:
+            page = MonthlyView(tasks: _getAllTasks());
+            break;
+          default:
+            throw UnimplementedError('No page for $_selectedIndex');
+        }
+
+        if (isMobile) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text('Calendar'),
+              bottom: TabBar(
+                controller: TabController(
+                  length: 3,
+                  vsync: Scaffold.of(context),
+                  initialIndex: _selectedIndex,
+                ),
+                onTap: (index) => setState(() => _selectedIndex = index),
+                tabs: const [
+                  Tab(text: 'Day', icon: Icon(Icons.calendar_view_day)),
+                  Tab(text: 'Week', icon: Icon(Icons.calendar_view_week)),
+                  Tab(text: 'Month', icon: Icon(Icons.calendar_view_month)),
                 ],
               ),
-              SizedBox(height: 10.0),
-              Expanded(
-                // padding: const EdgeInsets.all(8.0),
-                child: Row(
+            ),
+            body: page,
+          );
+        }
+
+        return Row(
+          children: [
+            NavigationRail(
+              selectedIndex: _selectedIndex,
+              onDestinationSelected: (index) =>
+                  setState(() => _selectedIndex = index),
+              destinations: const [
+                NavigationRailDestination(
+                  icon: Icon(Icons.calendar_view_day),
+                  label: Text('Day'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.calendar_view_week),
+                  label: Text('Week'),
+                ),
+                NavigationRailDestination(
+                  icon: Icon(Icons.calendar_view_month),
+                  label: Text('Month'),
+                ),
+              ],
+            ),
+            Expanded(child: page),
+          ],
+        );
+      },
+    );
+  }
+
+  List<Task> _getAllTasks() {
+    return DatabaseService.taskLists.values
+        .expand((list) => list.activeTasks)
+        .toList();
+  }
+}
+
+// ========================== Calendar Views ==========================
+
+class HourlyView extends StatefulWidget {
+  final List<Task> tasks;
+  const HourlyView({super.key, required this.tasks});
+
+  @override
+  State<HourlyView> createState() => _HourlyViewState();
+}
+
+class _HourlyViewState extends State<HourlyView> {
+  DateTime _selectedDate = DateTime.now();
+  // CHANGE 1: Two separate ScrollControllers
+  late ScrollController _taskScrollController;
+  late ScrollController _timeScrollController;
+
+  // Flag to prevent feedback loops when programmatically scrolling
+  bool _isProgrammaticScroll = false;
+
+  static const double _pixelsPerHour = 60.0;
+  // ... (other constants remain the same)
+  static const double _hourLabelWidth = 60.0;
+  static const double _timeColumnHeaderHeight = 8.0;
+  static const double _taskMinHeight = 20.0;
+  static const double _taskColumnGapFactor = 0.05;
+  static const double _currentTimeIndicatorLineHeight = 2.0;
+  static const double _currentTimeIndicatorCircleRadius = 4.0;
+
+
+  @override
+  void initState() {
+    super.initState();
+    // CHANGE 2: Initialize both controllers
+    _taskScrollController = ScrollController();
+    _timeScrollController = ScrollController();
+
+    // CHANGE 3: Add listener to the primary scroller (task area)
+    _taskScrollController.addListener(_syncScroll);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToCurrentHour(animate: true);
+    });
+  }
+
+  // CHANGE 4: Scroll synchronization logic
+  void _syncScroll() {
+    if (!_isProgrammaticScroll && // Prevent sync if we are programmatically scrolling
+        _timeScrollController.hasClients &&
+        _taskScrollController.hasClients &&
+        _timeScrollController.offset != _taskScrollController.offset) {
+      _isProgrammaticScroll = true; // Set flag
+      _timeScrollController.jumpTo(_taskScrollController.offset);
+      // Use a short delay to reset the flag, allowing the jumpTo to complete
+      Future.delayed(const Duration(milliseconds: 50), () { // Adjusted delay
+         _isProgrammaticScroll = false; // Reset flag
+      });
+    }
+  }
+
+  void _scrollToCurrentHour({bool animate = false}) {
+    if (_isToday(_selectedDate) && _taskScrollController.hasClients && _timeScrollController.hasClients) {
+      final currentHour = DateTime.now().hour;
+      final offset = currentHour * _pixelsPerHour;
+      print("Scrolling to hour: $currentHour, offset: $offset");
+
+      _isProgrammaticScroll = true; // Set flag
+
+      if (animate) {
+        Future.wait([
+          _taskScrollController.animateTo(
+            offset,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOut,
+          ),
+          _timeScrollController.animateTo(
+            offset,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOut,
+          ),
+        ]).whenComplete(() {
+            _isProgrammaticScroll = false; // Reset flag
+        });
+      } else {
+        _taskScrollController.jumpTo(offset);
+        _timeScrollController.jumpTo(offset);
+        // Ensure the flag is reset after jumpTo as well
+        Future.delayed(const Duration(milliseconds: 50), () {
+            _isProgrammaticScroll = false; // Reset flag
+        });
+      }
+    }
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final dayTasks = widget.tasks.where((task) {
+          final taskDate = task.startTime;
+          return taskDate.year == _selectedDate.year &&
+              taskDate.month == _selectedDate.month &&
+              taskDate.day == _selectedDate.day;
+        }).toList()
+          ..sort((a, b) => a.startTime.compareTo(b.startTime));
+
+        return Scaffold(
+          appBar: AppBar(
+            // ... (AppBar code is fine)
+            automaticallyImplyLeading: false,
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => setState(() => _selectedDate =
+                      _selectedDate.subtract(const Duration(days: 1))),
+                ),
+                GestureDetector(
+                  onTap: _selectDate,
+                  child: Text(
+                    DateFormat('EEE, MMM d, yyyy').format(_selectedDate),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => setState(() =>
+                      _selectedDate = _selectedDate.add(const Duration(days: 1))),
+                ),
+              ],
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.today),
+                onPressed: () {
+                  final now = DateTime.now();
+                  setState(() => _selectedDate = now);
+                  _scrollToCurrentHour(animate: true);
+                },
+                tooltip: 'Go to today',
+              ),
+            ],
+          ),
+          // No ScrollConfiguration needed for this approach
+          body: Row(
+            children: [
+              // Time labels column
+              SizedBox(
+                width: _hourLabelWidth,
+                child: Column(
                   children: [
-                    SizedBox(width: 10.0),
+                    const SizedBox(height: _timeColumnHeaderHeight),
                     Expanded(
-                      // padding: const EdgeInsets.all(8.0),
-                      child: Scaffold(
-                        body: Column(
-                          children: [
-                            TextField(
-                              controller: titleController,
-                              decoration: InputDecoration(
-                                labelText: 'Title',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(10.0),
+                      // CHANGE: Wrap with ScrollConfiguration to hide scrollbar for this specific SingleChildScrollView
+                      child: ScrollConfiguration(
+                        behavior: ScrollConfiguration.of(context).copyWith(
+                          scrollbars: false, // This explicitly tells it not to build scrollbars
+                        ),
+                        child: SingleChildScrollView(
+                          controller: _timeScrollController,
+                          physics: const NeverScrollableScrollPhysics(),
+                          child: Column(
+                            children: List.generate(24, (index) {
+                              return Container(
+                                height: _pixelsPerHour,
+                                alignment: Alignment.topCenter,
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  '${index.toString().padLeft(2, '0')}:00',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                    fontWeight: FontWeight.w500,
+                                  ),
                                 ),
-                              ),
-                            ),
-                            SizedBox(height: 10.0),
-                          ],
+                              );
+                            }),
+                          ),
                         ),
                       ),
                     ),
-                    SizedBox(width: 10.0),
                   ],
                 ),
               ),
-              Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(),
-                  ),
-                  ElevatedButton(
-                    onPressed: (){
-                      var list = TaskList(0, titleController.text, {});
-                      addList(list);
-                      appState.notify();
-                      Navigator.of(context).pop();
-                    },
-                    child: Text("Add"),
-                  ),
-                  Expanded(
-                    child: SizedBox(),
-                  )
-                ],
+              Container(width: 1, color: Colors.grey[300]),
+              // Tasks column
+              Expanded(
+                child: Column(
+                  children: [
+                    const SizedBox(height: _timeColumnHeaderHeight),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        // CHANGE 6: Assign _taskScrollController
+                        controller: _taskScrollController, // This is the one the user scrolls
+                        child: Container(
+                          height: 24 * _pixelsPerHour,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final double taskAreaWidth = constraints.maxWidth;
+                              return Stack(
+                                children: [
+                                  ..._buildHourGridLines(context),
+                                  ..._buildTaskBlocks(dayTasks, taskAreaWidth),
+                                  if (_isToday(_selectedDate))
+                                    _buildCurrentTimeIndicator(),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              SizedBox(height: 10.0,)
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ... (_buildHourGridLines, _buildTaskBlocks, _tasksOverlap, _buildTaskBlock, _getTaskColor, _getTaskBorderColor, _buildCurrentTimeIndicator, _isToday are fine)
+  // Make sure _getTaskColor and _getTaskBorderColor use task.color if available
+   List<Widget> _buildHourGridLines(BuildContext context) {
+    return List.generate(24, (index) {
+      final isCurrentHour = DateTime.now().hour == index && _isToday(_selectedDate);
+      return Positioned(
+        top: index * _pixelsPerHour,
+        left: 0,
+        right: 0,
+        height: _pixelsPerHour,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isCurrentHour
+                ? Theme.of(context).colorScheme.primary.withOpacity(0.1)
+                : null,
+            border: Border(
+              top: BorderSide(
+                color: Colors.grey[200]!,
+                width: 0.5,
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+
+  List<Widget> _buildTaskBlocks(List<Task> tasks, double availableWidth) {
+    if (tasks.isEmpty) return [];
+
+    final List<List<Task>> taskColumns = [];
+    for (final task in tasks) {
+      bool addedToColumn = false;
+      for (final column in taskColumns) {
+        if (!column.any((columnTask) => _tasksOverlap(task, columnTask))) {
+          column.add(task);
+          addedToColumn = true;
+          break;
+        }
+      }
+      if (!addedToColumn) {
+        taskColumns.add([task]);
+      }
+    }
+
+    final List<Widget> taskWidgets = [];
+    final totalColumns = taskColumns.length;
+    if (totalColumns == 0) return [];
+
+    for (int columnIndex = 0; columnIndex < taskColumns.length; columnIndex++) {
+      final column = taskColumns[columnIndex];
+      for (final task in column) {
+        taskWidgets.add(_buildTaskBlock(
+          task,
+          totalColumns,
+          columnIndex,
+          availableWidth,
+        ));
+      }
+    }
+    return taskWidgets;
+  }
+
+  bool _tasksOverlap(Task task1, Task task2) {
+    return task1.startTime.isBefore(task2.endTime) &&
+        task2.startTime.isBefore(task1.endTime);
+  }
+
+  Widget _buildTaskBlock(
+      Task task, int totalColumns, int columnIndex, double availableWidth) {
+    final startHour = task.startTime.hour;
+    final startMinute = task.startTime.minute;
+    final endHour = task.endTime.hour;
+    final endMinute = task.endTime.minute;
+
+    final startPosition = (startHour * _pixelsPerHour) + (startMinute / 60.0 * _pixelsPerHour);
+    final endPosition = (endHour * _pixelsPerHour) + (endMinute / 60.0 * _pixelsPerHour);
+    final durationInPixels = endPosition - startPosition;
+
+    final double columnWidthFull = availableWidth / totalColumns;
+    final double gapPerSide = columnWidthFull * _taskColumnGapFactor / 2.0;
+    final double taskActualWidth = columnWidthFull - (gapPerSide * 2.0);
+    final double taskLeftOffset = (columnIndex * columnWidthFull) + gapPerSide;
+
+    return Positioned(
+      top: startPosition.toDouble(),
+      left: taskLeftOffset,
+      width: taskActualWidth,
+      height: max(durationInPixels, _taskMinHeight),
+      child: GestureDetector(
+        onTap: () => _showTaskDetails(task),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          decoration: BoxDecoration(
+            color: _getTaskColor(task),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _getTaskBorderColor(task),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                task.title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: Colors.white,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (durationInPixels > 30)
+                Text(
+                  '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.white70,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              if (task.description.isNotEmpty && durationInPixels > 50)
+                Expanded(
+                  child: Text(
+                    task.description,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Colors.white70,
+                    ),
+                    maxLines: (durationInPixels / 18).floor().clamp(1,3),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
   }
-}
 
-class _TodoPageState extends State<TodoPage> {
-  var selectedIndex = -1;
-  var selectedListId = 0;
-
-  @override
-  Widget build(BuildContext context) { // TODO deal with none todo list
-    var appState = context.watch<AppState>();
-
-    Widget page;
-
-    var destination = taskList.values.map((list) => (list.id, Row(
-      children: [
-        Icon(Icons.star),
-        SizedBox(width: 10.0),
-        Text(list.title),
-      ],
-    ))).toList();
-
-    destination.add((0, Row(
-      children: [
-        Icon(Icons.add_circle),
-        SizedBox(width: 10.0),
-        Text("Add List"),
-      ],
-    )));
-
-    if ( taskList[selectedListId] == null) {
-      setState(() {
-        selectedIndex = -1;
-      });
+  Color _getTaskColor(Task task) {
+    if (task.isCompleted) {
+      return Colors.green.withOpacity(0.8);
+    } else if (task.isOverdue) {
+      return Colors.red.withOpacity(0.8);
+    } else {
+      return Theme.of(context).colorScheme.primary.withOpacity(0.8);
     }
+  }
 
-    var myNavigationRail = MyNavigationRail(
-      destinations: destination,
-      onDestinationSelected: (value){
-        setState(() {
-          var index = value.$1, id = value.$2;
-          if (index == taskList.length) {
-            Navigator.of(context).push(AddTaskListPage());
-            return;
-          }
-          selectedIndex = index;
-          selectedListId = id;
-        });
-      },
-      selectedIndex: selectedIndex,
-    );
-
-    if (destination.length == 1) {
-      page = Scaffold();
+  Color _getTaskBorderColor(Task task) {
+    if (task.isCompleted) {
+      return Colors.green;
+    } else if (task.isOverdue) {
+      return Colors.red;
+    } else {
+      return Theme.of(context).colorScheme.primary;
     }
+  }
 
-    page = GeneratorTodoPage(listIndex: selectedListId);
+ Widget _buildCurrentTimeIndicator() {
+    final now = DateTime.now();
+    final currentMinuteOfTheDay = (now.hour * 60) + now.minute;
+    final currentPosition = currentMinuteOfTheDay / 60.0 * _pixelsPerHour;
 
-    return Scaffold(
-      body: Row(
+    return Positioned(
+      top: currentPosition.toDouble() - (_currentTimeIndicatorLineHeight / 2),
+      left: 0,
+      right: 0,
+      height: _currentTimeIndicatorCircleRadius * 2,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Expanded(
-            child: myNavigationRail,
+          Container(
+            width: _currentTimeIndicatorCircleRadius * 2,
+            height: _currentTimeIndicatorCircleRadius * 2,
+            decoration: const BoxDecoration(
+              color: Colors.red,
+              shape: BoxShape.circle,
+            ),
           ),
           Expanded(
-            flex: 4,
             child: Container(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              child : page,
+              height: _currentTimeIndicatorLineHeight,
+              color: Colors.red,
             ),
           ),
         ],
       ),
     );
   }
-}
 
-class GeneratorTodoPage extends StatefulWidget {
-  GeneratorTodoPage({
-    super.key,
-    required this.listIndex,
-    // required this.pop,
-  });
+  bool _isToday(DateTime date) {
+    final now = DateTime.now();
+    return date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+  }
 
-  final int listIndex;
-  // final bool pop;
+  // --- Dialog and DB methods ---
+  // Ensure these use `mounted` checks and `context.read<AppState>().refresh()`
+  // and pop dialogs correctly as in previous good versions.
 
-  @override
-  State<GeneratorTodoPage> createState() => _GeneratorTodoPageState();
-}
-
-class _GeneratorTodoPageState extends State<GeneratorTodoPage> {
-  @override build(BuildContext context) {
-    var appState = context.watch<AppState>();
-
-    if (taskList[widget.listIndex] == null) {
-      return Scaffold();
-    }
-
-    return Scaffold(
-      floatingActionButton: FloatingActionButton(
-        child: Icon(Icons.add),
-        onPressed: () {
-          setState(() {
-            Navigator.of(context).push(
-              AddTaskPage<void>(listId: widget.listIndex)
-            );
-          });
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(dialogContext);
+          _showEditTaskDialog(task);
+        },
+        onToggleComplete: () {
+          _toggleTaskStatus(task); // async
+          Navigator.pop(dialogContext);
+        },
+        onDelete: () {
+          _deleteTask(task); // async
+          Navigator.pop(dialogContext);
         },
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            SizedBox(height: 5),
-            Container(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              child: Row(
-                children: [
-                  SizedBox(width: 10),
-                  Icon(Icons.star),
-                  SizedBox(width: 10),
-                  Text(taskList[widget.listIndex]!.title),
-                  Expanded(child: SizedBox()),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        deleteList(widget.listIndex);
-                        appState.notify();
-                      });
-                    },
-                    label: Icon(Icons.delete),
-                  ),
-                  SizedBox(width: 10),
-                ],
-              ),
-            ),
-            SizedBox(height: 5),
-            Expanded(
-              child: Container(
-                color: Colors.white,
-                child: Row(
-                  children: [
-                    SizedBox(width: 15),
-                    Expanded(
-                      child: ListView(
-                        children: taskList[widget.listIndex]!.tasks.values.map((task) => task.status != 4 ? Container(
-                          // color: task.stat != 2 ? Theme.of(context).colorScheme.primaryContainer : Colors.deepOrange[300],
-                          margin: EdgeInsets.all(10.0),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10.0),
-                            color: task.status != 2 ? Theme.of(context).colorScheme.primaryContainer : Colors.deepOrange[300],
-                            border: Border.all(
-                              color: Colors.black,
-                              width: 1.0,
-                            ),
-                          ),
-                          child: InkWell(
-                            onTap: (){
-                              modifyTaskState.listIndex = widget.listIndex;
-                              modifyTaskState.task = task;
-                              // modifyTaskState.task.listId = widget.listIndex; what's?
-                              Navigator.of(context).push(
-                                ModifyTaskPage<void>()
-                              );
-                            },
-                            child: Row(
-                              children: [
-                                SizedBox(width: 10),
-                                ElevatedButton.icon(
-                                  onPressed: (){
-                                    setState((){
-                                      task.status = task.status == 1 ? 0 : 1;
-                                      // print('changed task${task.id}');
-                                      modifyTask(task.id, widget.listIndex);
-                                      // updateTaskStatus(widget.listIndex, task.id, task.status);
-                                    });
-                                  },
-                                  label: Icon(task.status == 1 ? Icons.task_alt : Icons.circle),
-                                ),
-                                SizedBox(width: 10),
-                                Text(task.title),
-                                Expanded(child: SizedBox()),
-                                ElevatedButton(
-                                    onPressed: (){
-                                      setState(() {
-                                        Navigator.of(context).push(
-                                          MoveTaskPage(task: task)
-                                        );
-                                      });
-                                    },
-                                    child: Text("Move"),
-                                ),
-                                SizedBox(width: 10.0),
-                                ElevatedButton(
-                                    onPressed: (){
-                                      // task.stat = 4;
-                                      // modifyTaskState.task = task;
-                                      // appState.modifyTask(modifyTaskState.task.listId, modifyTaskState.task.id, modifyTaskState.task);
-                                      deleteTask(task.id, widget.listIndex);
-                                      appState.notify();
-                                    },
-                                    child: Text("Delete"),
-                                ),
-                                SizedBox(width: 10.0),
-                              ],
-                            ),
-                          ),
-                        ) : SizedBox()).toList(),
-                      ),
-                    ),
-                    SizedBox(width: 15),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
+    );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+           Navigator.pop(dialogContext); // Pop edit dialog first
+           DatabaseService.updateTask(updatedTask);
+        },
+        onDelete: () {
+          Navigator.pop(dialogContext); // Pop edit dialog first
+          DatabaseService.deleteTask(task.id, task.listId);
+        },
       ),
     );
   }
-}
 
-class AddTaskState {
-  var startTime = DateTime.now(), endTime = DateTime.now();
-}
-
-AddTaskState addTaskState = AddTaskState();
-
-class AddTaskPage<T> extends PopupRoute<T> {
-  final int listId;
-
-  AddTaskPage({required this.listId});
-
-  @override
-  Color? get barrierColor => Colors.black.withAlpha(0x50);
-
-  @override
-  bool get barrierDismissible => true;
-
-  @override
-  String? get barrierLabel => 'Add Task';
-
-  @override
-  Duration get transitionDuration => const Duration(milliseconds: 300);
-
-  DateTime selectedStartDate = DateTime.now();
-  DateTime selectedEndDate = DateTime.now();
-  TimeOfDay selectedStartTime = TimeOfDay.now();
-  TimeOfDay selectedEndTime = TimeOfDay.now();
-
-  @override
-  Widget buildPage(BuildContext context, Animation<double> animation,
-      Animation<double> secondaryAnimation) {
-    var titleController = TextEditingController();
-    var descriptionController = TextEditingController();
-    var appState = context.watch<AppState>();
-
-    return Center(
-      child: DefaultTextStyle(
-        style: Theme.of(context).textTheme.bodyMedium!,
-        child: Container(
-          margin: EdgeInsets.all(40),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            color: Colors.white,
-          ),
-          child: StatefulBuilder(
-            builder: (BuildContext context, StateSetter setState) {
-              return Column(
-                children: [
-                  SizedBox(height: 10.0),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text('Add Task', style: Theme.of(context).textTheme.headlineLarge),
-                    ],
-                  ),
-                  SizedBox(height: 10.0),
-                  Expanded(
-                    child: Row(
-                      children: [
-                        SizedBox(width: 10.0),
-                        Expanded(
-                          child: Scaffold(
-                            body: Column(
-                              children: [
-                                TextField(
-                                  controller: titleController,
-                                  decoration: InputDecoration(
-                                    labelText: 'Task Title',
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 10.0),
-                                TextField(
-                                  controller: descriptionController,
-                                  minLines: 2,
-                                  maxLines: 10,
-                                  decoration: InputDecoration(
-                                    labelText: 'Task Description',
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 10.0),
-                                // 日期选择器
-                                Row(
-                                  children: [
-                                    Text('Date: ${selectedStartDate.toLocal()}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final DateTime? pickedDate = await showDatePicker(
-                                          context: context,
-                                          initialDate: selectedStartDate,
-                                          firstDate: DateTime(2000),
-                                          lastDate: DateTime(2101),
-                                        );
-                                        if (pickedDate != null && pickedDate != selectedStartDate) {
-                                          setState(() {
-                                            selectedStartDate = pickedDate;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Date'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                // 开始时间选择器
-                                Row(
-                                  children: [
-                                    Text('Start Time: ${selectedStartTime.format(context)}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final TimeOfDay? pickedTime = await showTimePicker(
-                                          context: context,
-                                          initialTime: selectedStartTime,
-                                        );
-                                        if (pickedTime != null && pickedTime != selectedStartTime) {
-                                          setState(() {
-                                            selectedStartTime = pickedTime;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Start Time'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                Row(
-                                  children: [
-                                    Text('Date: ${selectedEndDate.toLocal()}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final DateTime? pickedDate = await showDatePicker(
-                                          context: context,
-                                          initialDate: selectedEndDate,
-                                          firstDate: DateTime(2000),
-                                          lastDate: DateTime(2101),
-                                        );
-                                        if (pickedDate != null && pickedDate != selectedEndDate) {
-                                          setState(() {
-                                            selectedEndDate = pickedDate;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Date'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                // 结束时间选择器
-                                Row(
-                                  children: [
-                                    Text('End Time: ${selectedEndTime.format(context)}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final TimeOfDay? pickedTime = await showTimePicker(
-                                          context: context,
-                                          initialTime: selectedEndTime,
-                                        );
-                                        if (pickedTime != null && pickedTime != selectedEndTime) {
-                                          setState(() {
-                                            selectedEndTime = pickedTime;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select End Time'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 10.0),
-                      ],
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      Expanded(child: SizedBox()),
-                      ElevatedButton(
-                        onPressed: () {
-                          // 将时间选择器的值转换为DateTime
-                          final startTime = DateTime(
-                            selectedStartDate.year,
-                            selectedStartDate.month,
-                            selectedStartDate.day,
-                            selectedStartTime.hour,
-                            selectedStartTime.minute,
-                          );
-                          final endTime = DateTime(
-                            selectedEndDate.year,
-                            selectedEndDate.month,
-                            selectedEndDate.day,
-                            selectedEndTime.hour,
-                            selectedEndTime.minute,
-                          );
-
-                          // 创建任务
-                          var task = Task(
-                            listId,
-                            0,
-                            titleController.text,
-                            descriptionController.text,
-                            startTime,
-                            endTime,
-                            1,
-                          );
-                          addTask(task);
-                          appState.notify();
-                          Navigator.of(context).pop();
-                        },
-                        child: Text("Add"),
-                      ),
-                      SizedBox(width: 20.0),
-                    ],
-                  ),
-                  SizedBox(height: 10.0),
-                ],
-              );
-            }
-          ),
-        ),
-      ),
+  void _toggleTaskStatus(Task task) {
+    final updatedTask = Task(
+        id: task.id,
+        listId: task.listId,
+        title: task.title,
+        description: task.description,
+        startTime: task.startTime,
+        endTime: task.endTime,
+        status: task.isCompleted ? 0 : 1,
     );
+    DatabaseService.updateTask(updatedTask);
   }
-}
 
-class MoveTaskPage<T> extends PopupRoute<T> {
-  MoveTaskPage({
-    required this.task,
-  });
-
-  @override
-  Color? get barrierColor => Colors.black.withAlpha(0x50);
-
-  // This allows the popup to be dismissed by tapping the scrim or by pressing
-  // the escape key on the keyboard.
-  @override
-  bool get barrierDismissible => true;
-
-  @override
-  String? get barrierLabel => 'Move Task';
-
-  @override
-  Duration get transitionDuration => const Duration(milliseconds: 300);
-
-  final Task task;
-
-  @override
-  Widget buildPage(BuildContext context, Animation<double> animation,
-      Animation<double> secondaryAnimation) {
-    var appState = context.watch<AppState>();
-
-    return LayoutBuilder(
-        builder: (BuildContext context, BoxConstraints constraints) {
-          var height = (constraints.maxHeight - 100.0) / 2;
-          var width = (constraints.maxWidth - 500.0) / 2;
-
-          var listController = TextEditingController();
-          var selectedList;
-
-          return Container(
-            margin: EdgeInsets.fromLTRB(width, height, width, height),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: Colors.white,
-            ),
-            child: Scaffold(
-              body: Center(
-                child: Row(children: [
-                  Expanded(child: SizedBox()),
-                  DropdownMenu<int>(
-                    label: const Text('Move'),
-                    dropdownMenuEntries: taskList.values.map((list) =>
-                        DropdownMenuEntry<int>(
-                          value: list.id,
-                          label: list.title,
-                        )).toList(),
-                    controller: listController,
-                    onSelected: (int? listId){
-                      selectedList = listId;
-                    },
-                  ),
-                  SizedBox(width: 50.0),
-                  ElevatedButton(onPressed: () {
-                    moveTask(task.id, task.listId, selectedList);
-                    appState.notify();
-                    Navigator.pop(context);
-                  }, child: Text("Move")),
-                  Expanded(child: SizedBox()),
-                ],
-                ),
-              ),
-            ),
-          );
-        }
-    );
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
   }
-}
 
-
-class AddTaskPageCalendar extends StatefulWidget {
-  @override
-  State<AddTaskPageCalendar> createState() => _AddTaskPageCalendarState();
-}
-
-class _AddTaskPageCalendarState extends State<AddTaskPageCalendar> {
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Text("Start Time:"),
-        SizedBox(width: 10.0),
-        CustomPopup(
-          showArrow: false,
-          content: SizedBox(
-            width: 300,
-            child: CalendarDatePicker(
-              initialDate: addTaskState.startTime,
-              firstDate: DateTime.fromMicrosecondsSinceEpoch(0),
-              lastDate: DateTime.fromMicrosecondsSinceEpoch(10000000000000000),
-              onDateChanged: (v) {
-                setState(() {
-
-                });
-                addTaskState.startTime = v;
-                print(v);
-              },
-            ),
-          ),
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: Theme.of(context).colorScheme.onInverseSurface,
-            ),
-            child: Icon(Icons.calendar_month),
-          ),
-        ),
-        SizedBox(width: 10.0),
-        Text("${addTaskState.startTime.year}-${addTaskState.startTime.month}-${addTaskState.startTime.day}"),
-        SizedBox(width: 100.0),
-        Text("End Time:"),
-        SizedBox(width: 10.0),
-        CustomPopup(
-          showArrow: false,
-          content: SizedBox(
-            width: 300,
-            child: CalendarDatePicker(
-              initialDate: addTaskState.endTime,
-              firstDate: DateTime.fromMicrosecondsSinceEpoch(0),
-              lastDate: DateTime.fromMicrosecondsSinceEpoch(10000000000000000),
-              onDateChanged: (v) {
-                setState(() {
-
-                });
-                addTaskState.endTime = v;
-                print(v);
-              },
-            ),
-          ),
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: Theme.of(context).colorScheme.onInverseSurface,
-            ),
-            child: Icon(Icons.calendar_month),
-          ),
-        ),
-        SizedBox(width: 10.0),
-        Text("${addTaskState.endTime.year}-${addTaskState.endTime.month}-${addTaskState.endTime.day}"),
-      ],
-    );
-  }
-}
-
-class ModifyTaskState {
-  var listIndex;
-  var task;
-}
-
-var modifyTaskState = ModifyTaskState();
-
-class ModifyTaskPage<T> extends PopupRoute<T> {
-  @override
-  Color? get barrierColor => Colors.black.withAlpha(0x50);
-
-  @override
-  bool get barrierDismissible => true;
-
-  @override
-  String? get barrierLabel => 'Modify Task';
-
-  @override
-  Duration get transitionDuration => const Duration(milliseconds: 300);
-
-  DateTime selectedStartDate = DateTime.now();
-  DateTime selectedEndDate = DateTime.now();
-  TimeOfDay selectedStartTime = TimeOfDay.now();
-  TimeOfDay selectedEndTime = TimeOfDay.now();
-
-  @override
-  Widget buildPage(BuildContext context, Animation<double> animation,
-      Animation<double> secondaryAnimation) {
-    var titleController = TextEditingController(text: modifyTaskState.task.title);
-    var descriptionController = TextEditingController(text: modifyTaskState.task.description);
-    var appState = context.watch<AppState>();
-
-    selectedStartDate = modifyTaskState.task.startTime;
-    selectedEndDate = modifyTaskState.task.endTime;
-    selectedStartTime = TimeOfDay.fromDateTime(modifyTaskState.task.startTime);
-    selectedEndTime = TimeOfDay.fromDateTime(modifyTaskState.task.endTime);
-
-    return Center(
-      child: DefaultTextStyle(
-        style: Theme.of(context).textTheme.bodyMedium!,
-        child: Container(
-          margin: EdgeInsets.all(40),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            color: Colors.white,
-          ),
-          child: StatefulBuilder(
-            builder: (BuildContext context, StateSetter setState) {
-              return Column(
-                children: [
-                  SizedBox(height: 10.0),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text('Modify Task', style: Theme.of(context).textTheme.headlineLarge),
-                    ],
-                  ),
-                  SizedBox(height: 10.0),
-                  Expanded(
-                    child: Row(
-                      children: [
-                        SizedBox(width: 10.0),
-                        Expanded(
-                          child: Scaffold(
-                            body: Column(
-                              children: [
-                                TextField(
-                                  controller: titleController,
-                                  decoration: InputDecoration(
-                                    labelText: 'Task Title',
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 10.0),
-                                TextField(
-                                  controller: descriptionController,
-                                  minLines: 2,
-                                  maxLines: 10,
-                                  decoration: InputDecoration(
-                                    labelText: 'Task Description',
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(10.0),
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(height: 10.0),
-                                Row(
-                                  children: [
-                                    Text('Date: ${selectedStartDate.toLocal()}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final DateTime? pickedDate = await showDatePicker(
-                                          context: context,
-                                          initialDate: selectedStartDate,
-                                          firstDate: DateTime(2000),
-                                          lastDate: DateTime(2101),
-                                        );
-                                        if (pickedDate != null && pickedDate != selectedStartDate) {
-                                          setState(() {
-                                            selectedStartDate = pickedDate;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Date'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                Row(
-                                  children: [
-                                    Text('Start Time: ${selectedStartTime.format(context)}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final TimeOfDay? pickedTime = await showTimePicker(
-                                          context: context,
-                                          initialTime: selectedStartTime,
-                                        );
-                                        if (pickedTime != null && pickedTime != selectedStartTime) {
-                                          setState(() {
-                                            selectedStartTime = pickedTime;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Start Time'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                Row(
-                                  children: [
-                                    Text('Date: ${selectedEndDate.toLocal()}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final DateTime? pickedDate = await showDatePicker(
-                                          context: context,
-                                          initialDate: selectedEndDate,
-                                          firstDate: DateTime(2000),
-                                          lastDate: DateTime(2101),
-                                        );
-                                        if (pickedDate != null && pickedDate != selectedEndDate) {
-                                          setState(() {
-                                            selectedEndDate = pickedDate;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select Date'),
-                                    ),
-                                  ],
-                                ),
-                                SizedBox(height: 10.0),
-                                Row(
-                                  children: [
-                                    Text('End Time: ${selectedEndTime.format(context)}'),
-                                    SizedBox(width: 16),
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        final TimeOfDay? pickedTime = await showTimePicker(
-                                          context: context,
-                                          initialTime: selectedEndTime,
-                                        );
-                                        if (pickedTime != null && pickedTime != selectedEndTime) {
-                                          setState(() {
-                                            selectedEndTime = pickedTime;
-                                          });
-                                        }
-                                      },
-                                      child: Text('Select End Time'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 10.0),
-                      ],
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      SizedBox(width: 20.0),
-                      ElevatedButton(
-                        onPressed: () {
-                          deleteTask(modifyTaskState.task.id, modifyTaskState.listIndex);
-                          appState.notify();
-                          Navigator.of(context).pop();
-                        },
-                        child: Text("Delete"),
-                      ),
-                      Expanded(child: SizedBox()),
-                      ElevatedButton(
-                        onPressed: () {
-                          final startTime = DateTime(
-                            selectedStartDate.year,
-                            selectedStartDate.month,
-                            selectedStartDate.day,
-                            selectedStartTime.hour,
-                            selectedStartTime.minute,
-                          );
-                          final endTime = DateTime(
-                            selectedEndDate.year,
-                            selectedEndDate.month,
-                            selectedEndDate.day,
-                            selectedEndTime.hour,
-                            selectedEndTime.minute,
-                          );
-
-                          modifyTaskState.task.title = titleController.text;
-                          modifyTaskState.task.description = descriptionController.text;
-                          modifyTaskState.task.startTime = startTime;
-                          modifyTaskState.task.endTime = endTime;
-
-                          taskList[modifyTaskState.listIndex]!.tasks[modifyTaskState.task.id] = modifyTaskState.task;
-                          modifyTask(modifyTaskState.task.id, modifyTaskState.listIndex);
-                          appState.notify();
-                          Navigator.of(context).pop();
-                        },
-                        child: Text("Save"),
-                      ),
-                      SizedBox(width: 20.0),
-                    ],
-                  ),
-                  SizedBox(height: 10.0),
-                ],
-              );
-            }
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class CalendarPage extends StatefulWidget {
-  @override
-  State<CalendarPage> createState() => _CalendarPageState();
-}
-
-class _CalendarPageState extends State<CalendarPage> {
-  var selectedIndex = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    var appState = context.watch<AppState>();
-    // appState.init();
-
-    // var calendarState = context.watch<CalendarState>();
-
-    Widget page;
-
-    switch (selectedIndex) {
-      case 0:
-        page = HourlyView(
-          // selectedDay: DateTime.now(),
-          tasks: taskList.values.expand((list) => list.tasks.values).toList(),
-        );
-        break;
-      case 1:
-        page = GeneratorWeekPage();
-        break;
-      case 2:
-        page = GeneratorMonthPage();
-        break;
-      default:
-        throw UnimplementedError("No implemented for $selectedIndex");
-    }
-
-    return LayoutBuilder(builder: (context, constraints) {
-      return Scaffold(
-        body: Row(
-          children: [
-            SafeArea(
-              child: NavigationRail(
-                backgroundColor: Color.lerp(Colors.white, Theme.of(context).colorScheme.primaryContainer, 0.5),
-                extended: constraints.maxWidth >= 600,
-                destinations: [
-                  NavigationRailDestination(
-                    icon: Icon(Icons.calendar_view_day),
-                    label: Text('Hours'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.calendar_view_week),
-                    label: Text('Week'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.calendar_view_month),
-                    label: Text('Month'),
-                  ),
-                ],
-                selectedIndex: selectedIndex,
-                onDestinationSelected: (value){
-                  setState((){
-                    selectedIndex = value;
-                  });
-                },
-              ),
-            ),
-            Expanded(
-              child: Container(
-                color: Colors.white,
-                child: page,
-              ),
-            ),
-          ],
-        ),
-      );
-    });
-
-  }
-}
-
-class CalendarHourPageContainer extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Column(
-        children: [
-          Container(
-            alignment: Alignment.center,
-            color: Theme.of(context).colorScheme.primaryContainer,
-            child: SizedBox(height: 30, width: 100),
-          ),
-          Container(
-            alignment: Alignment.center,
-            color: Theme.of(context).colorScheme.tertiaryContainer,
-            child: Text(""),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// Failed assertion: line 115 pos 16: 'destinations.length >= 2': is not true.
-// must have at least 2 destinations
-
-class HourlyView extends StatefulWidget {
-  final List<Task> tasks;
-
-  const HourlyView({super.key, required this.tasks});
-
-  @override
-  _HourlyViewState createState() => _HourlyViewState();
-}
-
-class _HourlyViewState extends State<HourlyView> {
-  DateTime _selectedDate = DateTime.now();
-
-  Future<void> _selectDate(BuildContext context) async {
-    final DateTime? picked = await showDatePicker(
+  Future<void> _selectDate() async {
+    final picked = await showDatePicker(
       context: context,
       initialDate: _selectedDate,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
     if (picked != null && picked != _selectedDate) {
-      setState(() {
-        _selectedDate = picked;
-      });
+      setState(() => _selectedDate = picked);
+      // Optionally, re-evaluate if you need to scroll to top/current hour on date change
+      // _scrollToCurrentHour(animate: false); // Example: if you want to scroll on date change
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    final filteredTasks = widget.tasks.where((task) =>
-      task.startTime.year == _selectedDate.year &&
-      task.startTime.month == _selectedDate.month &&
-      task.startTime.day == _selectedDate.day
-    ).toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 日期选择器
-        Padding(
-          padding: EdgeInsets.all(8.0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                DateFormat('yyyy-MM-dd').format(_selectedDate),
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              IconButton(
-                icon: Icon(Icons.calendar_today, size: 20),
-                onPressed: () => _selectDate(context),
-              ),
-            ],
-          ),
-        ),
-        // 小时视图内容
-        Expanded(
-          child: _buildHourlyView(filteredTasks),
-        ),
-      ],
-    );
+  void dispose() {
+    // CHANGE 7: Remove listener and dispose both controllers
+    _taskScrollController.removeListener(_syncScroll);
+    _taskScrollController.dispose();
+    _timeScrollController.dispose();
+    super.dispose();
   }
+}
 
-  Widget _buildHourlyView(List<Task> tasks) {
-    // 按开始时间排序任务
-    tasks.sort((a, b) => a.startTime.compareTo(b.startTime));
+class WeeklyView extends StatefulWidget {
+  final List<Task> tasks;
+  const WeeklyView({super.key, required this.tasks});
 
-    // 计算任务列
-    final taskColumns = _calculateTaskColumns(tasks);
+  @override
+  State<WeeklyView> createState() => _WeeklyViewState();
+}
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.vertical, // 垂直滚动
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal, // 横向滚动
-        child: Container(
-          width: _calculateTotalWidth(taskColumns), // 动态计算总宽度
-          child: Stack(
-            children: [
-              // 背景：每小时一行
-              Column(
-                children: List.generate(24, (hour) {
-                  return Container(
-                    height: 60, // 每小时60像素
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: Colors.grey.withOpacity(0.3),
+class _WeeklyViewState extends State<WeeklyView> {
+  DateTime _currentWeek = DateTime.now();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final startOfWeek = _currentWeek.subtract(Duration(days: _currentWeek.weekday - 1));
+        final endOfWeek = startOfWeek.add(const Duration(days: 6));
+
+        return Scaffold(
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => setState(() =>
+                      _currentWeek = _currentWeek.subtract(const Duration(days: 7))),
+                ),
+                Text(
+                  '${DateFormat('MMM d').format(startOfWeek)} - ${DateFormat('MMM d, yyyy').format(endOfWeek)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => setState(() =>
+                      _currentWeek = _currentWeek.add(const Duration(days: 7))),
+                ),
+              ],
+            ),
+          ),
+          body: Row(
+            children: List.generate(7, (index) {
+              final day = startOfWeek.add(Duration(days: index));
+              final dayTasks = widget.tasks.where((task) {
+                final taskDate = task.startTime;
+                return taskDate.year == day.year &&
+                       taskDate.month == day.month &&
+                       taskDate.day == day.day;
+              }).toList();
+
+              return Expanded(
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: DateTime.now().day == day.day &&
+                               DateTime.now().month == day.month &&
+                               DateTime.now().year == day.year
+                            ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                            : null,
+                        border: Border(
+                          right: index < 6
+                              ? BorderSide(color: Colors.grey.shade300)
+                              : BorderSide.none,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            DateFormat('EEE').format(day),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(DateFormat('d').format(day)),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          border: Border(
+                            right: index < 6
+                                ? BorderSide(color: Colors.grey.shade300)
+                                : BorderSide.none,
+                          ),
+                        ),
+                        child: ListView.builder(
+                          itemCount: dayTasks.length,
+                          itemBuilder: (context, taskIndex) {
+                            final task = dayTasks[taskIndex];
+                            return GestureDetector(
+                              onTap: () => _showTaskDetails(task),
+                              child: Container(
+                                margin: const EdgeInsets.all(2),
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: task.isCompleted
+                                      ? Colors.green.withOpacity(0.7)
+                                      : task.isOverdue
+                                          ? Colors.red.withOpacity(0.7)
+                                          : Theme.of(context).colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  task.title,
+                                  style: const TextStyle(fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                      child: Text(
-                        '${hour.toString().padLeft(2, '0')}:00',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                    ),
-                  );
-                }),
-              ),
-              // 任务块
-              ..._buildTaskBlocks(taskColumns),
-            ],
+                  ],
+                ),
+              );
+            }),
           ),
-        ),
+        );
+      }
+    );
+
+  }
+
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(context);
+          _showEditTaskDialog(task);
+        },
+        onToggleComplete: () {
+          _toggleTaskStatus(task);
+          Navigator.pop(context);
+        },
+        onDelete: () {
+          _deleteTask(task);
+          Navigator.pop(context);
+        },
       ),
     );
   }
 
-  // 计算任务列
-  Map<Task, int> _calculateTaskColumns(List<Task> tasks) {
-    final taskColumns = <Task, int>{};
-    final columnEndTimes = <int, DateTime>{};
-
-    for (final task in tasks) {
-      var column = 0;
-      while (columnEndTimes.containsKey(column) &&
-          columnEndTimes[column]!.isAfter(task.startTime)) {
-        column++;
-      }
-      taskColumns[task] = column;
-      columnEndTimes[column] = task.endTime;
-    }
-
-    return taskColumns;
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
   }
 
-  // 计算总宽度
-  double _calculateTotalWidth(Map<Task, int> taskColumns) {
-    final maxColumn = taskColumns.values.isEmpty ? 0 : taskColumns.values.reduce((a, b) => a > b ? a : b);
-    final contentWidth = 80 + (maxColumn + 1) * 120;
-    final screenWidth = MediaQuery.of(context).size.width;
-    return max(contentWidth.toDouble(), screenWidth); // 关键改动：取最大值
-    // return 80 + (maxColumn + 1) * 120; // 左侧时间标签宽度 + 列数 * 列宽
+  void _toggleTaskStatus(Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
   }
 
-  // 构建任务块
-  List<Widget> _buildTaskBlocks(Map<Task, int> taskColumns) {
-    return taskColumns.entries.map((entry) {
-      final task = entry.key;
-      final column = entry.value;
-
-      final startHour = task.startTime.hour;
-      final startMinute = task.startTime.minute;
-      final endHour = task.endTime.hour;
-      final endMinute = task.endTime.minute;
-
-      // 计算任务块的起始位置和高度
-      final top = startHour * 60 + startMinute; // 每分钟1像素
-      final height = (endHour - startHour) * 60 + (endMinute - startMinute);
-
-      // 计算任务块的左侧偏移量
-      final left = 80 + column * 120; // 每列宽度为120像素
-
-      return Positioned(
-        top: top.toDouble(),
-        left: left.toDouble(),
-        width: 100, // 任务块宽度
-        height: height.toDouble(),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.blue.withOpacity(0.5), // 任务块颜色
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Center(
-            child: Text(
-              task.title,
-              style: TextStyle(color: Colors.white, fontSize: 12),
-            ),
-          ),
-        ),
-      );
-    }).toList();
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
   }
 }
 
-class GeneratorMonthPage extends StatefulWidget {
+class MonthlyView extends StatefulWidget {
+  final List<Task> tasks;
+
+  const MonthlyView({super.key, required this.tasks});
+
   @override
-  _GeneratorMonthPageState createState() => _GeneratorMonthPageState();
+  State<MonthlyView> createState() => _MonthlyViewState();
 }
 
-class _GeneratorMonthPageState extends State<GeneratorMonthPage> {
-  CalendarFormat _calendarFormat = CalendarFormat.month;
+class _MonthlyViewState extends State<MonthlyView> {
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
-  Map<DateTime, List<Task>> _tasksByDay = {};
 
   @override
   void initState() {
     super.initState();
     _selectedDay = _focusedDay;
-    // Populate _tasksByDay from your taskList data
-    _loadTasksForMonth();
-  }
-
-  void _loadTasksForMonth() {
-    // Logic to filter tasks from 'taskList' for the currently focused month
-    // and group them by day.
-    // Example:
-    _tasksByDay.clear();
-    taskList.values.forEach((list) {
-      list.tasks.values.forEach((task) {
-        // Normalize task.startTime to midnight for day-based grouping
-        DateTime taskDay = DateTime(task.startTime.year, task.startTime.month, task.startTime.day);
-        if (_tasksByDay[taskDay] == null) {
-          _tasksByDay[taskDay] = [];
-        }
-        _tasksByDay[taskDay]!.add(task);
-      });
-    });
-    setState(() {});
-  }
-
-  List<Task> _getEventsForDay(DateTime day) {
-    // Normalize day to midnight for lookup
-    DateTime normalizedDay = DateTime(day.year, day.month, day.day);
-    return _tasksByDay[normalizedDay] ?? [];
   }
 
   @override
   Widget build(BuildContext context) {
-    var appState = context.watch<AppState>(); // If needed for updates
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Month View'),
-      ),
-      body: Column(
-        children: [
-          TableCalendar<Task>(
-            firstDay: DateTime.utc(2010, 10, 16),
-            lastDay: DateTime.utc(2030, 3, 14),
-            focusedDay: _focusedDay,
-            selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-            calendarFormat: _calendarFormat,
-            eventLoader: _getEventsForDay,
-            startingDayOfWeek: StartingDayOfWeek.monday,
-            onDaySelected: (selectedDay, focusedDay) {
-              if (!isSameDay(_selectedDay, selectedDay)) {
-                setState(() {
-                  _selectedDay = selectedDay;
-                  _focusedDay = focusedDay;
-                });
-              }
-            },
-            onFormatChanged: (format) {
-              if (_calendarFormat != format) {
-                setState(() {
-                  _calendarFormat = format;
-                });
-              }
-            },
-            onPageChanged: (focusedDay) {
-              _focusedDay = focusedDay;
-              _loadTasksForMonth(); // Reload tasks for the new month
-            },
-          ),
-          const SizedBox(height: 8.0),
-          Expanded(
-            child: _selectedDay != null
-                ? ListView(
-                    children: _getEventsForDay(_selectedDay!)
-                        .map((task) => ListTile(
-                              title: Text(task.title),
-                              subtitle: Text(task.description),
-                              onTap: (){
-                                Navigator.of(context).push(
-                                    ModifyTaskPage<void>()
-                                );},
-                              // Add onTap to view/edit task
-                            ))
-                        .toList(),
-                  )
-                : Container(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class SettingPage extends StatefulWidget {
-  @override
-  _SettingPageState createState() => _SettingPageState();
-}
-
-class _SettingPageState extends State<SettingPage> {
-  bool _darkModeEnabled = false; // Example setting
-
-  @override
-  Widget build(BuildContext context) {
-    // var appState = context.watch<AppState>(); // To modify global app settings
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Settings'),
-      ),
-      body: ListView(
-        children: <Widget>[
-          SwitchListTile(
-            title: Text('Dark Mode (Not Impl)'),
-            value: _darkModeEnabled,
-            onChanged: (bool value) {
-              setState(() {
-                _darkModeEnabled = value;
-                // Here you would typically call a method in your AppState or
-                // a theme provider to change the theme of the app.
-                // For example: Provider.of<ThemeProvider>(context, listen: false).setTheme(value);
-              });
-            },
-          ),
-          ListTile(
-            title: Text('Notification Settings (Example)'),
-            trailing: Icon(Icons.arrow_forward_ios),
-            onTap: () {
-              // Navigate to a detailed notification settings page
-            },
-          ),
-          ListTile(
-            title: Text('About SCOM'),
-            onTap: () {
-              showAboutDialog(
-                context: context,
-                applicationName: 'SCOM',
-                applicationVersion: '0.0.1', // Get from package_info_plus if you want
-                applicationLegalese: '©2025 OIer/HSAS',
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class GeneratorWeekPage extends StatefulWidget {
-  @override
-  _GeneratorWeekPageState createState() => _GeneratorWeekPageState();
-}
-
-class _GeneratorWeekPageState extends State<GeneratorWeekPage> {
-  late DateTime _currentDate; // Any date within the current week
-  late DateTime _startOfWeek;
-  late DateTime _endOfWeek;
-
-  @override
-  void initState() {
-    super.initState();
-    _currentDate = DateTime.now();
-    _calculateWeekRange(_currentDate);
-  }
-
-  void _calculateWeekRange(DateTime date) {
-    // Assuming Monday is the start of the week
-    _startOfWeek = date.subtract(Duration(days: date.weekday - 1));
-    _endOfWeek = _startOfWeek.add(Duration(days: 6));
-    // To ensure time components are zeroed out for accurate date comparison
-    _startOfWeek = DateTime(_startOfWeek.year, _startOfWeek.month, _startOfWeek.day);
-    _endOfWeek = DateTime(_endOfWeek.year, _endOfWeek.month, _endOfWeek.day, 23, 59, 59); // End of the last day
-  }
-
-  void _previousWeek() {
-    setState(() {
-      _currentDate = _currentDate.subtract(Duration(days: 7));
-      _calculateWeekRange(_currentDate);
-    });
-  }
-
-  void _nextWeek() {
-    setState(() {
-      _currentDate = _currentDate.add(Duration(days: 7));
-      _calculateWeekRange(_currentDate);
-    });
-  }
-
-  List<Task> _getTasksForDay(DateTime day) {
-    List<Task> dayTasks = [];
-    DateTime dayStart = DateTime(day.year, day.month, day.day);
-    DateTime dayEnd = DateTime(day.year, day.month, day.day, 23, 59, 59, 999);
-
-    taskList.values.forEach((list) {
-      list.tasks.values.forEach((task) {
-        // Check if the task's startTime or endTime falls within the day
-        // This is a simple check, you might want more complex logic for multi-day tasks
-        if ((task.startTime.isAfter(dayStart) && task.startTime.isBefore(dayEnd)) ||
-            (task.endTime.isAfter(dayStart) && task.endTime.isBefore(dayEnd)) ||
-            (task.startTime.isBefore(dayStart) && task.endTime.isAfter(dayEnd))) {
-          dayTasks.add(task);
-        }
-      });
-    });
-    dayTasks.sort((a, b) => a.startTime.compareTo(b.startTime)); // Sort tasks by start time
-    return dayTasks;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    var appState = context.watch<AppState>(); // Watch for changes if tasks can be updated elsewhere
-
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false, // Remove back button if it's part of a sub-navigation
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              icon: Icon(Icons.chevron_left),
-              onPressed: _previousWeek,
-            ),
-            Text(
-              "${DateFormat('MMM d').format(_startOfWeek)} - ${DateFormat('MMM d, yyyy').format(_endOfWeek)}",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            IconButton(
-              icon: Icon(Icons.chevron_right),
-              onPressed: _nextWeek,
-            ),
-          ],
-        ),
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          // Determine if the layout should be more compact (e.g. for smaller screens)
-          // For simplicity, this example uses a fixed number of columns for days
-          // For a responsive design, you might use GridView or change layout based on constraints.
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: List.generate(7, (index) { // 7 days in a week
-              final day = _startOfWeek.add(Duration(days: index));
-              final tasksForDay = _getTasksForDay(day);
-
-              return Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border(
-                      right: index < 6 ? BorderSide(color: Colors.grey.shade300) : BorderSide.none,
-                    ),
-                  ),
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return Scaffold(
+          body: Column(
+            children: [
+              TableCalendar<Task>(
+                firstDay: DateTime.utc(2010, 1, 1),
+                lastDay: DateTime.utc(2030, 12, 31),
+                focusedDay: _focusedDay,
+                selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                eventLoader: _getTasksForDay,
+                onDaySelected: (selectedDay, focusedDay) {
+                  setState(() {
+                    _selectedDay = selectedDay;
+                    _focusedDay = focusedDay;
+                  });
+                },
+                onPageChanged: (focusedDay) {
+                  setState(() => _focusedDay = focusedDay);
+                },
+              ),
+              if (_selectedDay != null) ...[
+                const Divider(),
+                Expanded(
+                  flex: 1,
                   child: Column(
                     children: [
-                      // Day Header
-                      Container(
-                        padding: EdgeInsets.all(8.0),
-                        width: double.infinity,
-                        color: DateTime.now().day == day.day && DateTime.now().month == day.month && DateTime.now().year == day.year
-                            ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                            : Colors.grey.shade200,
-                        child: Column(
-                          children: [
-                            Text(
-                              DateFormat('EEE').format(day), // e.g., Mon
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              DateFormat('d').format(day), // e.g., 12
-                              style: TextStyle(fontSize: 16),
-                            ),
-                          ],
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Text(
+                          _selectedDay != null
+                              ? 'Tasks for ${DateFormat('EEEE, MMMM d, yyyy').format(_selectedDay!)}'
+                              : 'Select a day to view tasks',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
-                      // Tasks List for the day
                       Expanded(
-                        child: tasksForDay.isEmpty
-                            ? Center(child: Text('-', style: TextStyle(color: Colors.grey)))
-                            : ListView.builder(
-                                itemCount: tasksForDay.length,
-                                itemBuilder: (context, taskIndex) {
-                                  final task = tasksForDay[taskIndex];
-                                  return InkWell(
-                                    onTap: () {
-                                       // Navigate to task details or modify task
-                                       // Similar to your TodoPage's task onTap
-                                      modifyTaskState.listIndex = task.listId;
-                                      modifyTaskState.task = task;
-                                      Navigator.of(context).push(
-                                        ModifyTaskPage<void>()
-                                      ).then((_) => setState((){})); // Refresh UI after modification
-                                    },
-                                    child: Container(
-                                      margin: EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
-                                      padding: EdgeInsets.all(6.0),
-                                      decoration: BoxDecoration(
-                                        color: task.status == 2 // Example: Highlight completed tasks
-                                            ? Colors.deepOrange[200]
-                                            : Theme.of(context).colorScheme.secondaryContainer,
-                                        borderRadius: BorderRadius.circular(4.0),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            task.title,
-                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          Text(
-                                            "${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}",
-                                            style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
-                                          ),
-                                        ],
+                        child: _selectedDay != null
+                            ? ListView.builder(
+                                itemCount: _getTasksForDay(_selectedDay!).length,
+                                itemBuilder: (context, index) {
+                                  final task = _getTasksForDay(_selectedDay!)[index];
+                                  return ListTile(
+                                    leading: Icon(
+                                      task.isCompleted
+                                          ? Icons.check_circle
+                                          : task.isOverdue
+                                              ? Icons.warning
+                                              : Icons.radio_button_unchecked,
+                                      color: task.isCompleted
+                                          ? Colors.green
+                                          : task.isOverdue
+                                              ? Colors.red
+                                              : Colors.grey,
+                                    ),
+                                    title: Text(
+                                      task.title,
+                                      style: TextStyle(
+                                        decoration: task.isCompleted
+                                            ? TextDecoration.lineThrough
+                                            : null,
                                       ),
                                     ),
+                                    subtitle: Text(
+                                      '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+                                    ),
+                                    onTap: () => _showTaskDetails(task),
                                   );
                                 },
+                              )
+                            : const Center(
+                                child: Text('Select a day to view tasks'),
                               ),
                       ),
                     ],
                   ),
                 ),
-              );
-            }),
-          );
+              ],
+            ],
+          ),
+        );
+      }
+    );
+  }
+
+  List<Task> _getTasksForDay(DateTime day) {
+    return widget.tasks.where((task) {
+      final taskDate = task.startTime;
+      return taskDate.year == day.year &&
+             taskDate.month == day.month &&
+             taskDate.day == day.day;
+    }).toList()..sort((a, b) => a.startTime.compareTo(b.startTime));
+  }
+
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(context);
+          _showEditTaskDialog(task);
         },
+        onToggleComplete: () {
+          _toggleTaskStatus(task);
+          Navigator.pop(context);
+        },
+        onDelete: () {
+          _deleteTask(task);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _toggleTaskStatus(Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
+  }
+}
+
+// ========================== Settings Page ==========================
+
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool _darkModeEnabled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Settings'),
+        automaticallyImplyLeading: false,
+      ),
+      body: ListView(
+        children: [
+          SwitchListTile(
+            title: const Text('Dark Mode'),
+            subtitle: const Text('Coming soon'),
+            value: _darkModeEnabled,
+            onChanged: null, // Disabled for now
+          ),
+          ListTile(
+            title: const Text('Notifications'),
+            subtitle: const Text('Configure notification settings'),
+            trailing: const Icon(Icons.arrow_forward_ios),
+            onTap: () {
+              // TODO: Implement notification settings
+            },
+          ),
+          const Divider(),
+          ListTile(
+            title: const Text('About SCOM'),
+            onTap: () {
+              showAboutDialog(
+                context: context,
+                applicationName: 'SCOM',
+                applicationVersion: '1.0.0',
+                applicationLegalese: '©2025 SCOM Team',
+                children: const [
+                  Text('A simple and efficient task management application.'),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }
