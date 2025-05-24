@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:ffi/ffi.dart';
-import 'package:flutter_popup/flutter_popup.dart';
 import 'package:database/database.dart' as database;
 import 'package:table_calendar/table_calendar.dart';
 
@@ -994,6 +993,146 @@ class MoveTaskDialog extends StatelessWidget {
   }
 }
 
+class TaskDetailsDialog extends StatelessWidget {
+  final Task task;
+  final VoidCallback onEdit;
+  final VoidCallback onToggleComplete;
+  final VoidCallback onDelete;
+
+  const TaskDetailsDialog({
+    super.key,
+    required this.task,
+    required this.onEdit,
+    required this.onToggleComplete,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        task.title,
+        style: TextStyle(
+          decoration: task.isCompleted ? TextDecoration.lineThrough : null,
+        ),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (task.description.isNotEmpty) ...[
+            const Text(
+              'Description:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(task.description),
+            const SizedBox(height: 16),
+          ],
+          const Text(
+            'Time:',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${DateFormat('MMM d, yyyy').format(task.startTime)}',
+            style: const TextStyle(fontSize: 14),
+          ),
+          Text(
+            '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(
+                task.isCompleted
+                    ? Icons.check_circle
+                    : task.isOverdue
+                        ? Icons.warning
+                        : Icons.radio_button_unchecked,
+                color: task.isCompleted
+                    ? Colors.green
+                    : task.isOverdue
+                        ? Colors.red
+                        : Colors.grey,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                task.isCompleted
+                    ? 'Completed'
+                    : task.isOverdue
+                        ? 'Overdue'
+                        : 'Pending',
+                style: TextStyle(
+                  color: task.isCompleted
+                      ? Colors.green
+                      : task.isOverdue
+                          ? Colors.red
+                          : Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: onToggleComplete,
+          icon: Icon(task.isCompleted ? Icons.undo : Icons.check),
+          label: Text(task.isCompleted ? 'Mark Incomplete' : 'Mark Complete'),
+        ),
+        TextButton.icon(
+          onPressed: onEdit,
+          icon: const Icon(Icons.edit),
+          label: const Text('Edit'),
+        ),
+        TextButton.icon(
+          onPressed: () {
+            Navigator.pop(context);
+            _showDeleteConfirmation(context);
+          },
+          icon: const Icon(Icons.delete, color: Colors.red),
+          label: const Text('Delete', style: TextStyle(color: Colors.red)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Task'),
+        content: Text('Are you sure you want to delete "${task.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              onDelete();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ========================== Calendar Page ==========================
 
 class CalendarPage extends StatefulWidget {
@@ -1088,7 +1227,6 @@ class _CalendarPageState extends State<CalendarPage> {
 
 class HourlyView extends StatefulWidget {
   final List<Task> tasks;
-
   const HourlyView({super.key, required this.tasks});
 
   @override
@@ -1097,63 +1235,484 @@ class HourlyView extends StatefulWidget {
 
 class _HourlyViewState extends State<HourlyView> {
   DateTime _selectedDate = DateTime.now();
+  // CHANGE 1: Two separate ScrollControllers
+  late ScrollController _taskScrollController;
+  late ScrollController _timeScrollController;
+
+  // Flag to prevent feedback loops when programmatically scrolling
+  bool _isProgrammaticScroll = false;
+
+  static const double _pixelsPerHour = 60.0;
+  // ... (other constants remain the same)
+  static const double _hourLabelWidth = 60.0;
+  static const double _timeColumnHeaderHeight = 8.0;
+  static const double _taskMinHeight = 20.0;
+  static const double _taskColumnGapFactor = 0.05;
+  static const double _currentTimeIndicatorLineHeight = 2.0;
+  static const double _currentTimeIndicatorCircleRadius = 4.0;
+
+
+  @override
+  void initState() {
+    super.initState();
+    // CHANGE 2: Initialize both controllers
+    _taskScrollController = ScrollController();
+    _timeScrollController = ScrollController();
+
+    // CHANGE 3: Add listener to the primary scroller (task area)
+    _taskScrollController.addListener(_syncScroll);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToCurrentHour(animate: true);
+    });
+  }
+
+  // CHANGE 4: Scroll synchronization logic
+  void _syncScroll() {
+    if (!_isProgrammaticScroll && // Prevent sync if we are programmatically scrolling
+        _timeScrollController.hasClients &&
+        _taskScrollController.hasClients &&
+        _timeScrollController.offset != _taskScrollController.offset) {
+      _isProgrammaticScroll = true; // Set flag
+      _timeScrollController.jumpTo(_taskScrollController.offset);
+      // Use a short delay to reset the flag, allowing the jumpTo to complete
+      Future.delayed(const Duration(milliseconds: 50), () { // Adjusted delay
+         _isProgrammaticScroll = false; // Reset flag
+      });
+    }
+  }
+
+  void _scrollToCurrentHour({bool animate = false}) {
+    if (_isToday(_selectedDate) && _taskScrollController.hasClients && _timeScrollController.hasClients) {
+      final currentHour = DateTime.now().hour;
+      final offset = currentHour * _pixelsPerHour;
+      print("Scrolling to hour: $currentHour, offset: $offset");
+
+      _isProgrammaticScroll = true; // Set flag
+
+      if (animate) {
+        Future.wait([
+          _taskScrollController.animateTo(
+            offset,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOut,
+          ),
+          _timeScrollController.animateTo(
+            offset,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOut,
+          ),
+        ]).whenComplete(() {
+            _isProgrammaticScroll = false; // Reset flag
+        });
+      } else {
+        _taskScrollController.jumpTo(offset);
+        _timeScrollController.jumpTo(offset);
+        // Ensure the flag is reset after jumpTo as well
+        Future.delayed(const Duration(milliseconds: 50), () {
+            _isProgrammaticScroll = false; // Reset flag
+        });
+      }
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
-    final dayTasks = widget.tasks.where((task) {
-      final taskDate = task.startTime;
-      return taskDate.year == _selectedDate.year &&
-             taskDate.month == _selectedDate.month &&
-             taskDate.day == _selectedDate.day;
-    }).toList()..sort((a, b) => a.startTime.compareTo(b.startTime));
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final dayTasks = widget.tasks.where((task) {
+          final taskDate = task.startTime;
+          return taskDate.year == _selectedDate.year &&
+              taskDate.month == _selectedDate.month &&
+              taskDate.day == _selectedDate.day;
+        }).toList()
+          ..sort((a, b) => a.startTime.compareTo(b.startTime));
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.chevron_left),
-              onPressed: () => setState(() =>
-                  _selectedDate = _selectedDate.subtract(const Duration(days: 1))),
+        return Scaffold(
+          appBar: AppBar(
+            // ... (AppBar code is fine)
+            automaticallyImplyLeading: false,
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => setState(() => _selectedDate =
+                      _selectedDate.subtract(const Duration(days: 1))),
+                ),
+                GestureDetector(
+                  onTap: _selectDate,
+                  child: Text(
+                    DateFormat('EEE, MMM d, yyyy').format(_selectedDate),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => setState(() =>
+                      _selectedDate = _selectedDate.add(const Duration(days: 1))),
+                ),
+              ],
             ),
-            GestureDetector(
-              onTap: _selectDate,
-              child: Text(
-                DateFormat('EEE, MMM d, yyyy').format(_selectedDate),
-                style: const TextStyle(fontWeight: FontWeight.bold),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.today),
+                onPressed: () {
+                  final now = DateTime.now();
+                  setState(() => _selectedDate = now);
+                  _scrollToCurrentHour(animate: true);
+                },
+                tooltip: 'Go to today',
+              ),
+            ],
+          ),
+          // No ScrollConfiguration needed for this approach
+          body: Row(
+            children: [
+              // Time labels column
+              SizedBox(
+                width: _hourLabelWidth,
+                child: Column(
+                  children: [
+                    const SizedBox(height: _timeColumnHeaderHeight),
+                    Expanded(
+                      // CHANGE: Wrap with ScrollConfiguration to hide scrollbar for this specific SingleChildScrollView
+                      child: ScrollConfiguration(
+                        behavior: ScrollConfiguration.of(context).copyWith(
+                          scrollbars: false, // This explicitly tells it not to build scrollbars
+                        ),
+                        child: SingleChildScrollView(
+                          controller: _timeScrollController,
+                          physics: const NeverScrollableScrollPhysics(),
+                          child: Column(
+                            children: List.generate(24, (index) {
+                              return Container(
+                                height: _pixelsPerHour,
+                                alignment: Alignment.topCenter,
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  '${index.toString().padLeft(2, '0')}:00',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              );
+                            }),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(width: 1, color: Colors.grey[300]),
+              // Tasks column
+              Expanded(
+                child: Column(
+                  children: [
+                    const SizedBox(height: _timeColumnHeaderHeight),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        // CHANGE 6: Assign _taskScrollController
+                        controller: _taskScrollController, // This is the one the user scrolls
+                        child: Container(
+                          height: 24 * _pixelsPerHour,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final double taskAreaWidth = constraints.maxWidth;
+                              return Stack(
+                                children: [
+                                  ..._buildHourGridLines(context),
+                                  ..._buildTaskBlocks(dayTasks, taskAreaWidth),
+                                  if (_isToday(_selectedDate))
+                                    _buildCurrentTimeIndicator(),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ... (_buildHourGridLines, _buildTaskBlocks, _tasksOverlap, _buildTaskBlock, _getTaskColor, _getTaskBorderColor, _buildCurrentTimeIndicator, _isToday are fine)
+  // Make sure _getTaskColor and _getTaskBorderColor use task.color if available
+   List<Widget> _buildHourGridLines(BuildContext context) {
+    return List.generate(24, (index) {
+      final isCurrentHour = DateTime.now().hour == index && _isToday(_selectedDate);
+      return Positioned(
+        top: index * _pixelsPerHour,
+        left: 0,
+        right: 0,
+        height: _pixelsPerHour,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isCurrentHour
+                ? Theme.of(context).colorScheme.primary.withOpacity(0.1)
+                : null,
+            border: Border(
+              top: BorderSide(
+                color: Colors.grey[200]!,
+                width: 0.5,
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.chevron_right),
-              onPressed: () => setState(() =>
-                  _selectedDate = _selectedDate.add(const Duration(days: 1))),
+          ),
+        ),
+      );
+    });
+  }
+
+  List<Widget> _buildTaskBlocks(List<Task> tasks, double availableWidth) {
+    if (tasks.isEmpty) return [];
+
+    final List<List<Task>> taskColumns = [];
+    for (final task in tasks) {
+      bool addedToColumn = false;
+      for (final column in taskColumns) {
+        if (!column.any((columnTask) => _tasksOverlap(task, columnTask))) {
+          column.add(task);
+          addedToColumn = true;
+          break;
+        }
+      }
+      if (!addedToColumn) {
+        taskColumns.add([task]);
+      }
+    }
+
+    final List<Widget> taskWidgets = [];
+    final totalColumns = taskColumns.length;
+    if (totalColumns == 0) return [];
+
+    for (int columnIndex = 0; columnIndex < taskColumns.length; columnIndex++) {
+      final column = taskColumns[columnIndex];
+      for (final task in column) {
+        taskWidgets.add(_buildTaskBlock(
+          task,
+          totalColumns,
+          columnIndex,
+          availableWidth,
+        ));
+      }
+    }
+    return taskWidgets;
+  }
+
+  bool _tasksOverlap(Task task1, Task task2) {
+    return task1.startTime.isBefore(task2.endTime) &&
+        task2.startTime.isBefore(task1.endTime);
+  }
+
+  Widget _buildTaskBlock(
+      Task task, int totalColumns, int columnIndex, double availableWidth) {
+    final startHour = task.startTime.hour;
+    final startMinute = task.startTime.minute;
+    final endHour = task.endTime.hour;
+    final endMinute = task.endTime.minute;
+
+    final startPosition = (startHour * _pixelsPerHour) + (startMinute / 60.0 * _pixelsPerHour);
+    final endPosition = (endHour * _pixelsPerHour) + (endMinute / 60.0 * _pixelsPerHour);
+    final durationInPixels = endPosition - startPosition;
+
+    final double columnWidthFull = availableWidth / totalColumns;
+    final double gapPerSide = columnWidthFull * _taskColumnGapFactor / 2.0;
+    final double taskActualWidth = columnWidthFull - (gapPerSide * 2.0);
+    final double taskLeftOffset = (columnIndex * columnWidthFull) + gapPerSide;
+
+    return Positioned(
+      top: startPosition.toDouble(),
+      left: taskLeftOffset,
+      width: taskActualWidth,
+      height: max(durationInPixels, _taskMinHeight),
+      child: GestureDetector(
+        onTap: () => _showTaskDetails(task),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          decoration: BoxDecoration(
+            color: _getTaskColor(task),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _getTaskBorderColor(task),
+              width: 1.5,
             ),
-          ],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                task.title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: Colors.white,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (durationInPixels > 30)
+                Text(
+                  '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Colors.white70,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              if (task.description.isNotEmpty && durationInPixels > 50)
+                Expanded(
+                  child: Text(
+                    task.description,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Colors.white70,
+                    ),
+                    maxLines: (durationInPixels / 18).floor().clamp(1,3),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
-      body: dayTasks.isEmpty
-          ? const Center(child: Text('No tasks for this day'))
-          : ListView.builder(
-              itemCount: dayTasks.length,
-              itemBuilder: (context, index) {
-                final task = dayTasks[index];
-                return Card(
-                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: ListTile(
-                    title: Text(task.title),
-                    subtitle: Text(
-                      '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
-                    ),
-                    trailing: task.isCompleted
-                        ? const Icon(Icons.check_circle, color: Colors.green)
-                        : null,
-                  ),
-                );
-              },
-            ),
     );
+  }
+
+  Color _getTaskColor(Task task) {
+    if (task.isCompleted) {
+      return Colors.green.withOpacity(0.8);
+    } else if (task.isOverdue) {
+      return Colors.red.withOpacity(0.8);
+    } else {
+      return Theme.of(context).colorScheme.primary.withOpacity(0.8);
+    }
+  }
+
+  Color _getTaskBorderColor(Task task) {
+    if (task.isCompleted) {
+      return Colors.green;
+    } else if (task.isOverdue) {
+      return Colors.red;
+    } else {
+      return Theme.of(context).colorScheme.primary;
+    }
+  }
+
+ Widget _buildCurrentTimeIndicator() {
+    final now = DateTime.now();
+    final currentMinuteOfTheDay = (now.hour * 60) + now.minute;
+    final currentPosition = currentMinuteOfTheDay / 60.0 * _pixelsPerHour;
+
+    return Positioned(
+      top: currentPosition.toDouble() - (_currentTimeIndicatorLineHeight / 2),
+      left: 0,
+      right: 0,
+      height: _currentTimeIndicatorCircleRadius * 2,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: _currentTimeIndicatorCircleRadius * 2,
+            height: _currentTimeIndicatorCircleRadius * 2,
+            decoration: const BoxDecoration(
+              color: Colors.red,
+              shape: BoxShape.circle,
+            ),
+          ),
+          Expanded(
+            child: Container(
+              height: _currentTimeIndicatorLineHeight,
+              color: Colors.red,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _isToday(DateTime date) {
+    final now = DateTime.now();
+    return date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+  }
+
+  // --- Dialog and DB methods ---
+  // Ensure these use `mounted` checks and `context.read<AppState>().refresh()`
+  // and pop dialogs correctly as in previous good versions.
+
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(dialogContext);
+          _showEditTaskDialog(task);
+        },
+        onToggleComplete: () {
+          _toggleTaskStatus(task); // async
+          Navigator.pop(dialogContext);
+        },
+        onDelete: () {
+          _deleteTask(task); // async
+          Navigator.pop(dialogContext);
+        },
+      ),
+    );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+           Navigator.pop(dialogContext); // Pop edit dialog first
+           DatabaseService.updateTask(updatedTask);
+        },
+        onDelete: () {
+          Navigator.pop(dialogContext); // Pop edit dialog first
+          DatabaseService.deleteTask(task.id, task.listId);
+        },
+      ),
+    );
+  }
+
+  void _toggleTaskStatus(Task task) {
+    final updatedTask = Task(
+        id: task.id,
+        listId: task.listId,
+        title: task.title,
+        description: task.description,
+        startTime: task.startTime,
+        endTime: task.endTime,
+        status: task.isCompleted ? 0 : 1,
+    );
+    DatabaseService.updateTask(updatedTask);
+  }
+
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
   }
 
   Future<void> _selectDate() async {
@@ -1163,15 +1722,25 @@ class _HourlyViewState extends State<HourlyView> {
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (picked != null) {
+    if (picked != null && picked != _selectedDate) {
       setState(() => _selectedDate = picked);
+      // Optionally, re-evaluate if you need to scroll to top/current hour on date change
+      // _scrollToCurrentHour(animate: false); // Example: if you want to scroll on date change
     }
+  }
+
+  @override
+  void dispose() {
+    // CHANGE 7: Remove listener and dispose both controllers
+    _taskScrollController.removeListener(_syncScroll);
+    _taskScrollController.dispose();
+    _timeScrollController.dispose();
+    super.dispose();
   }
 }
 
 class WeeklyView extends StatefulWidget {
   final List<Task> tasks;
-
   const WeeklyView({super.key, required this.tasks});
 
   @override
@@ -1183,105 +1752,166 @@ class _WeeklyViewState extends State<WeeklyView> {
 
   @override
   Widget build(BuildContext context) {
-    final startOfWeek = _currentWeek.subtract(Duration(days: _currentWeek.weekday - 1));
-    final endOfWeek = startOfWeek.add(const Duration(days: 6));
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final startOfWeek = _currentWeek.subtract(Duration(days: _currentWeek.weekday - 1));
+        final endOfWeek = startOfWeek.add(const Duration(days: 6));
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              icon: const Icon(Icons.chevron_left),
-              onPressed: () => setState(() =>
-                  _currentWeek = _currentWeek.subtract(const Duration(days: 7))),
-            ),
-            Text(
-              '${DateFormat('MMM d').format(startOfWeek)} - ${DateFormat('MMM d, yyyy').format(endOfWeek)}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            IconButton(
-              icon: const Icon(Icons.chevron_right),
-              onPressed: () => setState(() =>
-                  _currentWeek = _currentWeek.add(const Duration(days: 7))),
-            ),
-          ],
-        ),
-      ),
-      body: Row(
-        children: List.generate(7, (index) {
-          final day = startOfWeek.add(Duration(days: index));
-          final dayTasks = widget.tasks.where((task) {
-            final taskDate = task.startTime;
-            return taskDate.year == day.year &&
-                   taskDate.month == day.month &&
-                   taskDate.day == day.day;
-          }).toList();
-
-          return Expanded(
-            child: Column(
+        return Scaffold(
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: DateTime.now().day == day.day &&
-                           DateTime.now().month == day.month &&
-                           DateTime.now().year == day.year
-                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                        : null,
-                    border: Border(
-                      right: index < 6
-                          ? BorderSide(color: Colors.grey.shade300)
-                          : BorderSide.none,
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        DateFormat('EEE').format(day),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      Text(DateFormat('d').format(day)),
-                    ],
-                  ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => setState(() =>
+                      _currentWeek = _currentWeek.subtract(const Duration(days: 7))),
                 ),
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border(
-                        right: index < 6
-                            ? BorderSide(color: Colors.grey.shade300)
-                            : BorderSide.none,
-                      ),
-                    ),
-                    child: ListView.builder(
-                      itemCount: dayTasks.length,
-                      itemBuilder: (context, taskIndex) {
-                        final task = dayTasks[taskIndex];
-                        return Container(
-                          margin: const EdgeInsets.all(2),
-                          padding: const EdgeInsets.all(4),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            task.title,
-                            style: const TextStyle(fontSize: 12),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
+                Text(
+                  '${DateFormat('MMM d').format(startOfWeek)} - ${DateFormat('MMM d, yyyy').format(endOfWeek)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: () => setState(() =>
+                      _currentWeek = _currentWeek.add(const Duration(days: 7))),
                 ),
               ],
             ),
-          );
-        }),
+          ),
+          body: Row(
+            children: List.generate(7, (index) {
+              final day = startOfWeek.add(Duration(days: index));
+              final dayTasks = widget.tasks.where((task) {
+                final taskDate = task.startTime;
+                return taskDate.year == day.year &&
+                       taskDate.month == day.month &&
+                       taskDate.day == day.day;
+              }).toList();
+
+              return Expanded(
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: DateTime.now().day == day.day &&
+                               DateTime.now().month == day.month &&
+                               DateTime.now().year == day.year
+                            ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                            : null,
+                        border: Border(
+                          right: index < 6
+                              ? BorderSide(color: Colors.grey.shade300)
+                              : BorderSide.none,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            DateFormat('EEE').format(day),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(DateFormat('d').format(day)),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          border: Border(
+                            right: index < 6
+                                ? BorderSide(color: Colors.grey.shade300)
+                                : BorderSide.none,
+                          ),
+                        ),
+                        child: ListView.builder(
+                          itemCount: dayTasks.length,
+                          itemBuilder: (context, taskIndex) {
+                            final task = dayTasks[taskIndex];
+                            return GestureDetector(
+                              onTap: () => _showTaskDetails(task),
+                              child: Container(
+                                margin: const EdgeInsets.all(2),
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: task.isCompleted
+                                      ? Colors.green.withOpacity(0.7)
+                                      : task.isOverdue
+                                          ? Colors.red.withOpacity(0.7)
+                                          : Theme.of(context).colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  task.title,
+                                  style: const TextStyle(fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ),
+        );
+      }
+    );
+
+  }
+
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(context);
+          _showEditTaskDialog(task);
+        },
+        onToggleComplete: () {
+          _toggleTaskStatus(task);
+          Navigator.pop(context);
+        },
+        onDelete: () {
+          _deleteTask(task);
+          Navigator.pop(context);
+        },
       ),
     );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _toggleTaskStatus(Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
   }
 }
 
@@ -1304,59 +1934,152 @@ class _MonthlyViewState extends State<MonthlyView> {
     _selectedDay = _focusedDay;
   }
 
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return Scaffold(
+          body: Column(
+            children: [
+              TableCalendar<Task>(
+                firstDay: DateTime.utc(2010, 1, 1),
+                lastDay: DateTime.utc(2030, 12, 31),
+                focusedDay: _focusedDay,
+                selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                eventLoader: _getTasksForDay,
+                onDaySelected: (selectedDay, focusedDay) {
+                  setState(() {
+                    _selectedDay = selectedDay;
+                    _focusedDay = focusedDay;
+                  });
+                },
+                onPageChanged: (focusedDay) {
+                  setState(() => _focusedDay = focusedDay);
+                },
+              ),
+              if (_selectedDay != null) ...[
+                const Divider(),
+                Expanded(
+                  flex: 1,
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Text(
+                          _selectedDay != null
+                              ? 'Tasks for ${DateFormat('EEEE, MMMM d, yyyy').format(_selectedDay!)}'
+                              : 'Select a day to view tasks',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: _selectedDay != null
+                            ? ListView.builder(
+                                itemCount: _getTasksForDay(_selectedDay!).length,
+                                itemBuilder: (context, index) {
+                                  final task = _getTasksForDay(_selectedDay!)[index];
+                                  return ListTile(
+                                    leading: Icon(
+                                      task.isCompleted
+                                          ? Icons.check_circle
+                                          : task.isOverdue
+                                              ? Icons.warning
+                                              : Icons.radio_button_unchecked,
+                                      color: task.isCompleted
+                                          ? Colors.green
+                                          : task.isOverdue
+                                              ? Colors.red
+                                              : Colors.grey,
+                                    ),
+                                    title: Text(
+                                      task.title,
+                                      style: TextStyle(
+                                        decoration: task.isCompleted
+                                            ? TextDecoration.lineThrough
+                                            : null,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
+                                    ),
+                                    onTap: () => _showTaskDetails(task),
+                                  );
+                                },
+                              )
+                            : const Center(
+                                child: Text('Select a day to view tasks'),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      }
+    );
+  }
+
   List<Task> _getTasksForDay(DateTime day) {
     return widget.tasks.where((task) {
       final taskDate = task.startTime;
       return taskDate.year == day.year &&
              taskDate.month == day.month &&
              taskDate.day == day.day;
-    }).toList();
+    }).toList()..sort((a, b) => a.startTime.compareTo(b.startTime));
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Column(
-        children: [
-          TableCalendar<Task>(
-            firstDay: DateTime.utc(2010, 1, 1),
-            lastDay: DateTime.utc(2030, 12, 31),
-            focusedDay: _focusedDay,
-            selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-            eventLoader: _getTasksForDay,
-            onDaySelected: (selectedDay, focusedDay) {
-              setState(() {
-                _selectedDay = selectedDay;
-                _focusedDay = focusedDay;
-              });
-            },
-            onPageChanged: (focusedDay) {
-              setState(() => _focusedDay = focusedDay);
-            },
-          ),
-          if (_selectedDay != null) ...[
-            const Divider(),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _getTasksForDay(_selectedDay!).length,
-                itemBuilder: (context, index) {
-                  final task = _getTasksForDay(_selectedDay!)[index];
-                  return ListTile(
-                    title: Text(task.title),
-                    subtitle: Text(
-                      '${DateFormat.jm().format(task.startTime)} - ${DateFormat.jm().format(task.endTime)}',
-                    ),
-                    trailing: task.isCompleted
-                        ? const Icon(Icons.check_circle, color: Colors.green)
-                        : null,
-                  );
-                },
-              ),
-            ),
-          ],
-        ],
+  void _showTaskDetails(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => TaskDetailsDialog(
+        task: task,
+        onEdit: () {
+          Navigator.pop(context);
+          _showEditTaskDialog(task);
+        },
+        onToggleComplete: () {
+          _toggleTaskStatus(task);
+          Navigator.pop(context);
+        },
+        onDelete: () {
+          _deleteTask(task);
+          Navigator.pop(context);
+        },
       ),
     );
+  }
+
+  void _showEditTaskDialog(Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _toggleTaskStatus(Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTask(Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
   }
 }
 
