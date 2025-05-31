@@ -315,8 +315,15 @@ int Dart_get_list_pre() {
         list_pre = true;
         LOG(DEBUG) << "List preloaded.";
         return static_cast<int>(list_num);
+    } else if (inited) {
+        db->query_task_list_num(list_num);
+        db->query_all_task_list(lists);
+        list_cnt = 0;
+        list_pre = true;
+        LOG(DEBUG) << "List preloaded again.";
+        return static_cast<int>(list_num);
     }
-    LOG(ERROR) << "No inited or already preloaded.";
+    LOG(ERROR) << "No inited.";
     return -1;
 }
 
@@ -328,8 +335,15 @@ int Dart_get_task_pre() {
         task_pre = true;
         LOG(DEBUG) << "Task preloaded.";
         return static_cast<int>(task_num);
+    } else if (inited) {
+        db->query_task_num(task_num);
+        db->query_all_task(tasks);
+        task_cnt = 0;
+        task_pre = true;
+        LOG(DEBUG) << "Task preloaded again.";
+        return static_cast<int>(task_num);
     }
-    LOG(ERROR) << "No inited or already preloaded.";
+    LOG(ERROR) << "No inited.";
     return -1;
 }
 
