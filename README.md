@@ -8,10 +8,10 @@ Welcome to the Simple Calendar and Outcome Manager, a streamlined application bu
 
 ## Features
 
-- [ ] **Intuitive Calendar**: Easily view and manage your daily, weekly, and monthly schedules.
-- [ ] **Outcome Tracking**: Keep track of your goals and tasks with a simple and effective tracking system.
+- [x] **Intuitive Calendar**: Easily view and manage your daily, weekly, and monthly schedules.
+- [x] **Outcome Tracking**: Keep track of your goals and tasks with a simple and effective tracking system.
 - [ ] **Notifications**: Set reminders for important events and deadlines.
-- [ ] **Cross-Platform**: Available on both Windows and Linux.
+- [x] **Cross-Platform**: Available on both Windows, Linux, macOS, Android.
 
 ## Develop
 
@@ -20,7 +20,7 @@ Welcome to the Simple Calendar and Outcome Manager, a streamlined application bu
 Before you begin, ensure you have met the following requirements:
 
 - Flutter SDK: [Installation Guide](https://flutter.dev/docs/get-started/install)
-- MinGW-64: [Download Link](https://gcc.gnu.org/)
+- MinGW-64: [Download Link](https://gcc.gnu.org/) (or other build system you like)
 - CMAKE: [Download Link](https://cmake.org/download/)
 - An IDE such as Visual Studio Code or Intellij IDEA
 
@@ -39,14 +39,7 @@ Before you begin, ensure you have met the following requirements:
    ```sh
    flutter pub get
    ```
-4. Compile Dependents:
-   
-   Compile [database](database) with cmake.
-   Copy the output lib to binary file directory of flutter app. 
-   ```sh
-   cp libSCOM_database.dll flutter_scom/build/windows/x64/runner/Debug/database.dll
-   ```
-5. Run the app:
+4. Run the app:
    ```sh
    flutter run
    ```

@@ -6,10 +6,10 @@
 
 ## 特性
 
-- [ ] **直观的日历**：轻松查看和管理您的每日、每周和每月日程。
-- [ ] **目标跟踪**：使用简单有效地跟踪系统记录您的目标和任务。
+- [x] **直观的日历**：轻松查看和管理您的每日、每周和每月日程。
+- [x] **目标跟踪**：使用简单有效地跟踪系统记录您的目标和任务。
 - [ ] **通知**：为重要事件和截止日期设置提醒。
-- [ ] **跨平台**：可在 Windows 和 Linux 设备上使用。
+- [x] **跨平台**：可在 Windows，Linux，macOS，Android 设备上使用。
 
 ## 开发指南
 
@@ -18,7 +18,7 @@
 在开始之前，请确保您已经满足以下要求：
 
 - Flutter SDK：[安装指南](https://flutter.dev/docs/get-started/install)
-- MinGW-64: [下载链接](https://gcc.gnu.org/)
+- MinGW-64: [下载链接](https://gcc.gnu.org/) （或其他构建系统）
 - CMAKE: [下载链接](https://cmake.org/download/)
 - 一款 IDE，如 Visual Studio Code 或 Intellij Idea
 
@@ -37,13 +37,7 @@
    ```sh
    flutter pub get
    ```
-4. 编译依赖:
-   使用CMAKE编译[database](database)。
-   然后复制至编译flutter_scom得到的二进制文件目录下。
-   ```sh
-   cp libSCOM_database.dll flutter_scom/build/windows/x64/runner/Debug/database.dll
-   ```
-5. 运行应用：
+4. 运行应用：
    ```sh
    flutter run
    ```
