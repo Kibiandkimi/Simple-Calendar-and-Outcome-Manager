@@ -313,11 +313,7 @@ class _TodoPageState extends State<TodoPage> {
   }
 
   Widget _buildMobileLayout(Map<int, TaskList> taskLists) {
-    if (_selectedListId == null || !taskLists.containsKey(_selectedListId)) {
-      return _buildTaskListSelector(taskLists, true);
-    }
-
-    return _buildTaskListView(_selectedListId!, true);
+    return _buildTaskListSelector(taskLists, true);
   }
 
   Widget _buildDesktopLayout(Map<int, TaskList> taskLists) {
@@ -384,7 +380,20 @@ class _TodoPageState extends State<TodoPage> {
           ),
         ],
       ),
-      onTap: () => setState(() => _selectedListId = taskList.id),
+      onTap: () {
+        if (isMobile) {
+          // Use proper navigation for mobile
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => TaskListDetailPage(taskList: taskList),
+            ),
+          );
+        } else {
+          // Keep the existing behavior for desktop
+          setState(() => _selectedListId = taskList.id);
+        }
+      },
       selected: _selectedListId == taskList.id,
     );
   }
@@ -551,6 +560,153 @@ class _TodoPageState extends State<TodoPage> {
     );
   }
 }
+
+class TaskListDetailPage extends StatelessWidget {
+  final TaskList taskList;
+
+  const TaskListDetailPage({super.key, required this.taskList});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        final tasks = taskList.activeTasks;
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(taskList.title),
+          ),
+          floatingActionButton: FloatingActionButton(
+            onPressed: () => _showAddTaskDialog(context, taskList.id),
+            child: const Icon(Icons.add),
+          ),
+          body: tasks.isEmpty
+              ? const Center(child: Text('No tasks yet'))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: tasks.length,
+                  itemBuilder: (context, index) => _buildTaskTile(context, tasks[index]),
+                ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTaskTile(BuildContext context, Task task) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: task.isOverdue ? Colors.deepOrange[300] : null,
+      child: ListTile(
+        leading: Checkbox(
+          value: task.isCompleted,
+          onChanged: (value) => _toggleTaskStatus(context, task),
+        ),
+        title: Text(
+          task.title,
+          style: TextStyle(
+            decoration: task.isCompleted ? TextDecoration.lineThrough : null,
+          ),
+        ),
+        subtitle: task.description.isNotEmpty ? Text(task.description) : null,
+        trailing: PopupMenuButton<String>(
+          onSelected: (String value) {
+            switch (value) {
+              case 'edit':
+                _showEditTaskDialog(context, task);
+                break;
+              case 'move':
+                _showMoveTaskDialog(context, task);
+                break;
+              case 'delete':
+                _deleteTask(context, task);
+                break;
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem<String>(
+              value: 'edit',
+              child: Row(
+                children: [Icon(Icons.edit), SizedBox(width: 8), Text('Edit')],
+              ),
+            ),
+            const PopupMenuItem<String>(
+              value: 'move',
+              child: Row(
+                children: [Icon(Icons.move_to_inbox), SizedBox(width: 8), Text('Move')],
+              ),
+            ),
+            const PopupMenuItem<String>(
+              value: 'delete',
+              child: Row(
+                children: [Icon(Icons.delete), SizedBox(width: 8), Text('Delete')],
+              ),
+            ),
+          ],
+        ),
+        onTap: () => _showEditTaskDialog(context, task),
+      ),
+    );
+  }
+
+  // Add the helper methods here...
+  void _toggleTaskStatus(BuildContext context, Task task) {
+    task.status = task.isCompleted ? 0 : 1;
+    DatabaseService.updateTask(task);
+    context.read<AppState>().refresh();
+  }
+
+  void _deleteTask(BuildContext context, Task task) {
+    DatabaseService.deleteTask(task.id, task.listId);
+    context.read<AppState>().refresh();
+  }
+
+  void _showAddTaskDialog(BuildContext context, int listId) {
+    showDialog(
+      context: context,
+      builder: (context) => AddTaskDialog(
+        listId: listId,
+        onAdd: (task) {
+          DatabaseService.addTask(task);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _showEditTaskDialog(BuildContext context, Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => EditTaskDialog(
+        task: task,
+        onSave: (updatedTask) {
+          DatabaseService.updateTask(updatedTask);
+          context.read<AppState>().refresh();
+        },
+        onDelete: () {
+          DatabaseService.deleteTask(task.id, task.listId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+
+  void _showMoveTaskDialog(BuildContext context, Task task) {
+    showDialog(
+      context: context,
+      builder: (context) => MoveTaskDialog(
+        task: task,
+        availableLists: DatabaseService.taskLists.values
+            .where((list) => list.id != task.listId)
+            .toList(),
+        onMove: (targetListId) {
+          DatabaseService.moveTask(task.id, task.listId, targetListId);
+          context.read<AppState>().refresh();
+        },
+      ),
+    );
+  }
+}
+
 
 // ========================== Dialogs ==========================
 
