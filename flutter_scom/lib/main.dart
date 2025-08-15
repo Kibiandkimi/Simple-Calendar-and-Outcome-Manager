@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:ffi/ffi.dart';
 import 'package:database/database.dart' as database;
 import 'package:table_calendar/table_calendar.dart';
+import 'package:linked_scroll_controller/linked_scroll_controller.dart';
 
 // ========================== Models ==========================
 
@@ -1404,11 +1405,9 @@ class HourlyView extends StatefulWidget {
 class _HourlyViewState extends State<HourlyView> {
   DateTime _selectedDate = DateTime.now();
   // CHANGE 1: Two separate ScrollControllers
+  late LinkedScrollControllerGroup _scrollControllers;
   late ScrollController _taskScrollController;
   late ScrollController _timeScrollController;
-
-  // Flag to prevent feedback loops when programmatically scrolling
-  bool _isProgrammaticScroll = false;
 
   static const double _pixelsPerHour = 60.0;
   // ... (other constants remain the same)
@@ -1423,63 +1422,32 @@ class _HourlyViewState extends State<HourlyView> {
   @override
   void initState() {
     super.initState();
-    // CHANGE 2: Initialize both controllers
-    _taskScrollController = ScrollController();
-    _timeScrollController = ScrollController();
 
-    // CHANGE 3: Add listener to the primary scroller (task area)
-    _taskScrollController.addListener(_syncScroll);
+    // 初始化同步控制器组
+    _scrollControllers = LinkedScrollControllerGroup();
+    _taskScrollController = _scrollControllers.addAndGet();
+    _timeScrollController = _scrollControllers.addAndGet();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToCurrentHour(animate: true);
     });
   }
 
-  // CHANGE 4: Scroll synchronization logic
-  void _syncScroll() {
-    if (!_isProgrammaticScroll && // Prevent sync if we are programmatically scrolling
-        _timeScrollController.hasClients &&
-        _taskScrollController.hasClients &&
-        _timeScrollController.offset != _taskScrollController.offset) {
-      _isProgrammaticScroll = true; // Set flag
-      _timeScrollController.jumpTo(_taskScrollController.offset);
-      // Use a short delay to reset the flag, allowing the jumpTo to complete
-      Future.delayed(const Duration(milliseconds: 50), () { // Adjusted delay
-         _isProgrammaticScroll = false; // Reset flag
-      });
-    }
-  }
-
   void _scrollToCurrentHour({bool animate = false}) {
-    if (_isToday(_selectedDate) && _taskScrollController.hasClients && _timeScrollController.hasClients) {
+    if (_isToday(_selectedDate) &&
+        _taskScrollController.hasClients &&
+        _timeScrollController.hasClients) {
       final currentHour = DateTime.now().hour;
       final offset = currentHour * _pixelsPerHour;
-      print("Scrolling to hour: $currentHour, offset: $offset");
-
-      _isProgrammaticScroll = true; // Set flag
 
       if (animate) {
-        Future.wait([
-          _taskScrollController.animateTo(
-            offset,
-            duration: const Duration(milliseconds: 500),
-            curve: Curves.easeInOut,
-          ),
-          _timeScrollController.animateTo(
-            offset,
-            duration: const Duration(milliseconds: 500),
-            curve: Curves.easeInOut,
-          ),
-        ]).whenComplete(() {
-            _isProgrammaticScroll = false; // Reset flag
-        });
+        _taskScrollController.animateTo(
+          offset,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOut,
+        );
       } else {
         _taskScrollController.jumpTo(offset);
-        _timeScrollController.jumpTo(offset);
-        // Ensure the flag is reset after jumpTo as well
-        Future.delayed(const Duration(milliseconds: 50), () {
-            _isProgrammaticScroll = false; // Reset flag
-        });
       }
     }
   }
@@ -1908,8 +1876,6 @@ class _HourlyViewState extends State<HourlyView> {
 
   @override
   void dispose() {
-    // CHANGE 7: Remove listener and dispose both controllers
-    _taskScrollController.removeListener(_syncScroll);
     _taskScrollController.dispose();
     _timeScrollController.dispose();
     super.dispose();
