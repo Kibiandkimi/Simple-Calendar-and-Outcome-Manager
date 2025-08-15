@@ -1310,13 +1310,25 @@ class _CalendarPageState extends State<CalendarPage> {
         Widget page;
         switch (_selectedIndex) {
           case 0:
-            page = HourlyView(tasks: _getAllTasks());
+            page = Consumer<AppState>(
+              builder: (context, appState, child) {
+                return HourlyView(tasks: _getAllTasks());
+              }
+            );
             break;
           case 1:
-            page = WeeklyView(tasks: _getAllTasks());
+            page = Consumer<AppState>(
+              builder: (context, appState, child) {
+                return WeeklyView(tasks: _getAllTasks());
+              }
+            );
             break;
           case 2:
-            page = MonthlyView(tasks: _getAllTasks());
+            page = Consumer<AppState>(
+              builder: (context, appState, child) {
+                return MonthlyView(tasks: _getAllTasks());
+              }
+            );
             break;
           default:
             throw UnimplementedError('No page for $_selectedIndex');
@@ -1843,12 +1855,16 @@ class _HourlyViewState extends State<HourlyView> {
       builder: (dialogContext) => EditTaskDialog(
         task: task,
         onSave: (updatedTask) {
-           Navigator.pop(dialogContext); // Pop edit dialog first
-           DatabaseService.updateTask(updatedTask);
+          // Navigator.pop(dialogContext); // 先关编辑框
+          DatabaseService.updateTask(updatedTask);
+          // ✅ 触发 Provider 刷新（修复：编辑后小时视图与日历不同步/空白）
+          context.read<AppState>().refresh();
         },
         onDelete: () {
-          Navigator.pop(dialogContext); // Pop edit dialog first
+          // Navigator.pop(dialogContext); // 先关编辑框
           DatabaseService.deleteTask(task.id, task.listId);
+          // ✅ 删除后刷新
+          context.read<AppState>().refresh();
         },
       ),
     );
@@ -1856,19 +1872,24 @@ class _HourlyViewState extends State<HourlyView> {
 
   void _toggleTaskStatus(Task task) {
     final updatedTask = Task(
-        id: task.id,
-        listId: task.listId,
-        title: task.title,
-        description: task.description,
-        startTime: task.startTime,
-        endTime: task.endTime,
-        status: task.isCompleted ? 0 : 1,
+      id: task.id,
+      listId: task.listId,
+      title: task.title,
+      description: task.description,
+      startTime: task.startTime,
+      endTime: task.endTime,
+      status: task.isCompleted ? 0 : 1,
     );
     DatabaseService.updateTask(updatedTask);
+    // ✅ 切换状态后刷新（修复：小时视图不更新）
+    context.read<AppState>().refresh();
   }
 
+  // HourlyView 内部
   void _deleteTask(Task task) {
     DatabaseService.deleteTask(task.id, task.listId);
+    // ✅ 删除后刷新（确保小时视图/周视图/月视图一致）
+    context.read<AppState>().refresh();
   }
 
   Future<void> _selectDate() async {
